@@ -1,0 +1,26 @@
+# IDEA
+.idea/
+*.iml
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/**/*.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Env
+backend/.env
+frontend/.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data cache / runtime
+data/chroma/
+data/tripsage.db

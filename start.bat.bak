@@ -1,0 +1,51 @@
+@echo off
+setlocal
+
+REM 行迹智策 TripSage Agent 一键启动脚本�?REM 目标：自动准备后端虚拟环境、安装依赖、初始化数据库、启动前端和后端�?
+cd /d "%~dp0"
+
+if not exist "backend\.env" (
+  copy "backend\.env.example" "backend\.env" >nul
+  echo 已创�?backend\.env，请按需填写 LLM、AMAP �?MCP 配置�?)
+
+if not exist "frontend\.env" (
+  copy "frontend\.env.example" "frontend\.env" >nul
+)
+
+if not exist "mcp_servers.json" (
+  copy "mcp_servers.example.json" "mcp_servers.json" >nul
+  echo 已创�?mcp_servers.json，请根据 ModelScope 12306 MCP 页面填写真实配置�?)
+
+if not exist "backend\.venv" (
+  echo 正在创建后端虚拟环境...
+  python -m venv backend\.venv
+)
+
+echo 正在安装后端依赖...
+call backend\.venv\Scripts\python.exe -m pip install --upgrade pip
+call backend\.venv\Scripts\pip.exe install -e backend
+
+echo 正在初始化数据库和示例攻�?..
+pushd backend
+call .venv\Scripts\python.exe -m app.scripts.init_db
+call .venv\Scripts\python.exe -m app.scripts.seed_guides
+popd
+
+echo 正在安装前端依赖...
+pushd frontend
+if not exist "node_modules" (
+  call npm install
+)
+popd
+
+echo 正在启动后端服务 http://127.0.0.1:8000
+start "TripSage Backend" cmd /k "cd /d %cd%\backend && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload"
+
+echo 正在启动前端服务 http://127.0.0.1:5173
+start "TripSage Frontend" cmd /k "cd /d %cd%\frontend && npm run dev"
+
+timeout /t 3 >nul
+start http://127.0.0.1:5173
+
+echo TripSage Agent 已启动�?endlocal
+

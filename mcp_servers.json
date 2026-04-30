@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "12306": {
+      "transport": "stdio",
+      "command": "mcp-server-12306",
+      "args": [],
+      "env": {}
+    }
+  }
+}
