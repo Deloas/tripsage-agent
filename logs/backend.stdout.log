@@ -1,0 +1,24 @@
+2026-04-30 15:54:52 | INFO | 启动数据初始化完成：{'seed_inserted': 0, 'seed_skipped': 15, 'vector_rebuilt': True, 'weibo_crawl': None}
+INFO:     127.0.0.1:49673 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52991 - "GET /api/users HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61993 - "GET /api/guides/sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62635 - "GET /api/users HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52991 - "GET /api/guides/sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65512 - "GET /api/tools/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52991 - "GET /api/tools/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65512 - "GET /api/guides/sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62635 - "GET /api/users HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61993 - "GET /api/guides/sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65512 - "GET /api/users HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52991 - "GET /api/tools/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65512 - "GET /api/tools/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56884 - "OPTIONS /api/chat/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56884 - "POST /api/chat/stream HTTP/1.1" 200 OK
+2026-04-30 15:57:11 | WARNING | 高德接口业务失败 /v3/geocode/geo：ENGINE_RESPONSE_DATA_ERROR
+INFO:     127.0.0.1:61704 - "GET /api/guides/sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59099 - "GET /api/tools/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60381 - "GET /api/users HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59253 - "GET /api/guides/sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59099 - "GET /api/users HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61704 - "GET /api/tools/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62836 - "GET /api/tools/status HTTP/1.1" 200 OK

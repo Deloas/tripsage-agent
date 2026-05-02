@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import {
   Fingerprint,
   KeyRound,
@@ -21,6 +21,7 @@ import type {
   PreferenceProfile,
   UserProfileUpdatePayload,
 } from "../lib/types";
+import { PreferenceProfileSnapshot } from "./PreferenceProfileWorkbench";
 
 interface UserCenterProps {
   open: boolean;
@@ -53,6 +54,19 @@ interface UserCenterProps {
 }
 
 type Notice = { type: "error" | "success"; text: string } | null;
+
+function resolveAuthNotice(error: unknown, fallback: string) {
+  if (error && typeof error === "object") {
+    const maybeError = error as { message?: unknown; data?: { error?: unknown } };
+    if (typeof maybeError.data?.error === "string" && maybeError.data.error.trim()) {
+      return maybeError.data.error.trim();
+    }
+    if (typeof maybeError.message === "string" && maybeError.message.trim()) {
+      return maybeError.message.trim();
+    }
+  }
+  return fallback;
+}
 
 export function UserCenter({
   open,
@@ -97,16 +111,6 @@ export function UserCenter({
   const canSaveProfile = profileDisplayName.trim().length > 0
     && (!newPassword || (newPassword.length >= 6 && newPassword === confirmPassword));
 
-  const profileTags = useMemo(
-    () => [
-      ...(preferenceProfile?.preferred_cities || []),
-      ...(preferenceProfile?.transport_modes || []),
-      ...(preferenceProfile?.pace_tags || []),
-      ...(preferenceProfile?.interest_tags || []),
-    ].slice(0, 8),
-    [preferenceProfile],
-  );
-
   useEffect(() => {
     if (!open) return;
     setNotice(null);
@@ -138,7 +142,10 @@ export function UserCenter({
       );
       setLoginPassword("");
     } catch (error) {
-      setNotice({ type: "error", text: "登录失败，请检查账号或密码后重试。" });
+      setNotice({
+        type: "error",
+        text: resolveAuthNotice(error, "登录失败，请检查账号名、显示名称或密码后重试。"),
+      });
     } finally {
       setBusy(false);
     }
@@ -289,8 +296,12 @@ export function UserCenter({
             {view === "login" ? (
               <form className="user-form compact" onSubmit={handleLogin}>
                 <label>
-                  <span>账号名</span>
-                  <input value={loginName} onChange={(event) => setLoginName(event.target.value)} placeholder="例如：default 或 xiaolin" />
+                  <span>账号名或显示名称</span>
+                  <input
+                    value={loginName}
+                    onChange={(event) => setLoginName(event.target.value)}
+                    placeholder="例如：wu、葡萄不过季、default"
+                  />
                 </label>
                 <label>
                   <span>密码</span>
@@ -301,6 +312,9 @@ export function UserCenter({
                     placeholder="演示账号可留空"
                   />
                 </label>
+                <p className="user-form-note">
+                  支持使用账号名或显示名称登录；如果存在同名显示名称，请使用账号名登录。
+                </p>
                 <button className="primary-action wide" disabled={!canLogin || busy}>登录并进入工作台</button>
               </form>
             ) : (
@@ -310,8 +324,12 @@ export function UserCenter({
                   <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="例如：小林" />
                 </label>
                 <label>
-                  <span>账号名</span>
-                  <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="例如：xiaolin" />
+                  <span>账号名（可选）</span>
+                  <input
+                    value={username}
+                    onChange={(event) => setUsername(event.target.value)}
+                    placeholder="例如：xiaolin；留空会自动生成"
+                  />
                 </label>
                 <label>
                   <span>密码</span>
@@ -367,16 +385,14 @@ export function UserCenter({
 
             {view === "profile" ? (
               <form className="user-form user-form-profile" onSubmit={handleProfileSave}>
-                <div className="profile-note-card">
-                  <div className="section-kicker">
-                    <Sparkles size={15} />
-                    偏好画像摘要
-                  </div>
-                  <strong>{preferenceProfile?.recommendation_hint || "当前还没有足够多的历史规划来沉淀稳定偏好。"}</strong>
-                  <div className="profile-tags">
-                    {profileTags.length ? profileTags.map((tag) => <span key={tag}>{tag}</span>) : <span>等待更多交互</span>}
-                  </div>
-                </div>
+                <PreferenceProfileSnapshot
+                  profile={preferenceProfile}
+                  compact
+                  showEvidence
+                  title="偏好画像摘要"
+                  subtitle="这里会同步展示系统当前学到的长期偏好和最近证据。"
+                  emptyText="当前还没有足够多的历史规划来沉淀稳定偏好。"
+                />
 
                 <div className="account-form-grid">
                   <label>

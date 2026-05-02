@@ -1,0 +1,17 @@
+
+> tripsage-agent-frontend@0.1.0 dev
+> vite --host 127.0.0.1 --port 5173
+
+
+  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m513[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
+[2m16:27:38[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.tsx, /src/styles/global.css[22m
+[2m16:27:38[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/TopNav.tsx, /src/styles/global.css[22m
+[2m16:27:38[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/PlannerSidebar.tsx, /src/styles/global.css[22m
+[2m16:27:38[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/ChatWorkspace.tsx, /src/styles/global.css[22m
+[2m16:27:38[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/InsightPanel.tsx, /src/styles/global.css[22m
+[2m16:27:38[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/AddGuideModal.tsx, /src/styles/global.css[22m
+[2m16:30:44[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/styles/global.css[22m
+[2m16:46:36[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/TopNav.tsx, /src/styles/global.css[22m
+[2m16:49:05[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/InsightPanel.tsx, /src/styles/global.css[22m

@@ -215,6 +215,12 @@ class ConversationService:
             PreferenceService(self.db, user_key=str(payload.user_id)).learn_from_interaction(
                 latest_user_message,
                 latest_response,
+                slots={
+                    "destination": payload.destination_city,
+                    "budget": payload.budget,
+                    "date": payload.start_date,
+                },
+                conversation_id=conversation_id,
             )
 
         saved_conversation = self.db.get(Conversation, conversation_id)

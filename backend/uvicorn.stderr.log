@@ -1,0 +1,76 @@
+INFO:     Started server process [10524]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+2026-05-01 09:34:28,107 - mcp_12306.utils.config - WARNING - 环境配置文件 C:\Users\86136\Desktop\大模型期末项目\.env 不存在，使用默认配置
+2026-05-01 09:34:28,112 - mcp_12306.utils.config - INFO - 配置加载成功 - 主机: 0.0.0.0, 端口: 8000, 调试模式: False, 日志级别: INFO
+2026-05-01 09:34:28,118 - mcp_12306.stdio_server - INFO - 启动 mcp-server-12306 (stdio 模式)...
+2026-05-01 09:34:28,122 - mcp_12306.stdio_server - INFO - 版本: 0.3.1.post20260211
+2026-05-01 09:34:28,122 - mcp_12306.stdio_server - INFO - 正在加载车站数据...
+2026-05-01 09:34:28,138 - root - INFO - 已加载3364个车站（含城市信息，自动排列修正字段）
+2026-05-01 09:34:28,139 - mcp_12306.stdio_server - INFO - 已加载 3364 个车站
+2026-05-01 09:34:28,143 - mcp_12306.stdio_server - INFO - MCP Server 已启动，等待客户端连接...
+2026-05-01 09:34:28,150 - mcp.server.lowlevel.server - INFO - Processing request of type ListToolsRequest
+2026-05-01 09:34:29,266 - mcp_12306.utils.config - WARNING - 环境配置文件 C:\Users\86136\Desktop\大模型期末项目\.env 不存在，使用默认配置
+2026-05-01 09:34:29,267 - mcp_12306.utils.config - INFO - 配置加载成功 - 主机: 0.0.0.0, 端口: 8000, 调试模式: False, 日志级别: INFO
+2026-05-01 09:34:29,269 - mcp_12306.stdio_server - INFO - 启动 mcp-server-12306 (stdio 模式)...
+2026-05-01 09:34:29,270 - mcp_12306.stdio_server - INFO - 版本: 0.3.1.post20260211
+2026-05-01 09:34:29,270 - mcp_12306.stdio_server - INFO - 正在加载车站数据...
+2026-05-01 09:34:29,281 - root - INFO - 已加载3364个车站（含城市信息，自动排列修正字段）
+2026-05-01 09:34:29,282 - mcp_12306.stdio_server - INFO - 已加载 3364 个车站
+2026-05-01 09:34:29,286 - mcp_12306.stdio_server - INFO - MCP Server 已启动，等待客户端连接...
+2026-05-01 09:34:29,291 - mcp.server.lowlevel.server - INFO - Processing request of type CallToolRequest
+2026-05-01 09:34:29,294 - mcp_12306.stdio_server - INFO - 调用工具: query-tickets, 参数: {'from_station': '杭州', 'to_station': '南京', 'train_date': '2026-05-02'}
+2026-05-01 09:34:29,294 - mcp_12306.server - INFO - 查询参数: 杭州 -> 南京 (2026-05-02)
+2026-05-01 09:34:29,491 - httpx - INFO - HTTP Request: GET https://kyfw.12306.cn/otn/leftTicket/init "HTTP/1.1 200 OK"
+2026-05-01 09:34:29,642 - httpx - INFO - HTTP Request: GET https://kyfw.12306.cn/otn/leftTicket/queryG?leftTicketDTO.train_date=2026-05-02&leftTicketDTO.from_station=HZH&leftTicketDTO.to_station=NJH&purpose_codes=ADULT "HTTP/1.1 200 OK"
+2026-05-01 09:34:29,961 - mcp_12306.server - INFO - 12306 queryG status: 200, url: https://kyfw.12306.cn/otn/leftTicket/queryG?leftTicketDTO.train_date=2026-05-02&leftTicketDTO.from_station=HZH&leftTicketDTO.to_station=NJH&purpose_codes=ADULT
+2026-05-01 09:34:29,969 - mcp.server.lowlevel.server - INFO - Processing request of type ListToolsRequest
+2026-05-01 10:04:09,206 - mcp_12306.utils.config - WARNING - 环境配置文件 C:\Users\86136\Desktop\大模型期末项目\.env 不存在，使用默认配置
+2026-05-01 10:04:09,207 - mcp_12306.utils.config - INFO - 配置加载成功 - 主机: 0.0.0.0, 端口: 8000, 调试模式: False, 日志级别: INFO
+2026-05-01 10:04:09,209 - mcp_12306.stdio_server - INFO - 启动 mcp-server-12306 (stdio 模式)...
+2026-05-01 10:04:09,209 - mcp_12306.stdio_server - INFO - 版本: 0.3.1.post20260211
+2026-05-01 10:04:09,209 - mcp_12306.stdio_server - INFO - 正在加载车站数据...
+2026-05-01 10:04:09,218 - root - INFO - 已加载3364个车站（含城市信息，自动排列修正字段）
+2026-05-01 10:04:09,219 - mcp_12306.stdio_server - INFO - 已加载 3364 个车站
+2026-05-01 10:04:09,222 - mcp_12306.stdio_server - INFO - MCP Server 已启动，等待客户端连接...
+2026-05-01 10:04:09,226 - mcp.server.lowlevel.server - INFO - Processing request of type ListToolsRequest
+2026-05-01 10:04:10,127 - mcp_12306.utils.config - WARNING - 环境配置文件 C:\Users\86136\Desktop\大模型期末项目\.env 不存在，使用默认配置
+2026-05-01 10:04:10,128 - mcp_12306.utils.config - INFO - 配置加载成功 - 主机: 0.0.0.0, 端口: 8000, 调试模式: False, 日志级别: INFO
+2026-05-01 10:04:10,131 - mcp_12306.stdio_server - INFO - 启动 mcp-server-12306 (stdio 模式)...
+2026-05-01 10:04:10,131 - mcp_12306.stdio_server - INFO - 版本: 0.3.1.post20260211
+2026-05-01 10:04:10,131 - mcp_12306.stdio_server - INFO - 正在加载车站数据...
+2026-05-01 10:04:10,140 - root - INFO - 已加载3364个车站（含城市信息，自动排列修正字段）
+2026-05-01 10:04:10,141 - mcp_12306.stdio_server - INFO - 已加载 3364 个车站
+2026-05-01 10:04:10,145 - mcp_12306.stdio_server - INFO - MCP Server 已启动，等待客户端连接...
+2026-05-01 10:04:10,150 - mcp.server.lowlevel.server - INFO - Processing request of type CallToolRequest
+2026-05-01 10:04:10,151 - mcp_12306.stdio_server - INFO - 调用工具: query-tickets, 参数: {'from_station': '杭州', 'to_station': '南京', 'train_date': '2026-05-02'}
+2026-05-01 10:04:10,152 - mcp_12306.server - INFO - 查询参数: 杭州 -> 南京 (2026-05-02)
+2026-05-01 10:04:10,583 - httpx - INFO - HTTP Request: GET https://kyfw.12306.cn/otn/leftTicket/init "HTTP/1.1 200 OK"
+2026-05-01 10:04:10,718 - httpx - INFO - HTTP Request: GET https://kyfw.12306.cn/otn/leftTicket/queryG?leftTicketDTO.train_date=2026-05-02&leftTicketDTO.from_station=HZH&leftTicketDTO.to_station=NJH&purpose_codes=ADULT "HTTP/1.1 200 OK"
+2026-05-01 10:04:10,731 - mcp_12306.server - INFO - 12306 queryG status: 200, url: https://kyfw.12306.cn/otn/leftTicket/queryG?leftTicketDTO.train_date=2026-05-02&leftTicketDTO.from_station=HZH&leftTicketDTO.to_station=NJH&purpose_codes=ADULT
+2026-05-01 10:04:10,739 - mcp.server.lowlevel.server - INFO - Processing request of type ListToolsRequest
+2026-05-01 10:15:08,593 - mcp_12306.utils.config - WARNING - 环境配置文件 C:\Users\86136\Desktop\大模型期末项目\.env 不存在，使用默认配置
+2026-05-01 10:15:08,596 - mcp_12306.utils.config - INFO - 配置加载成功 - 主机: 0.0.0.0, 端口: 8000, 调试模式: False, 日志级别: INFO
+2026-05-01 10:15:08,598 - mcp_12306.stdio_server - INFO - 启动 mcp-server-12306 (stdio 模式)...
+2026-05-01 10:15:08,598 - mcp_12306.stdio_server - INFO - 版本: 0.3.1.post20260211
+2026-05-01 10:15:08,598 - mcp_12306.stdio_server - INFO - 正在加载车站数据...
+2026-05-01 10:15:08,608 - root - INFO - 已加载3364个车站（含城市信息，自动排列修正字段）
+2026-05-01 10:15:08,608 - mcp_12306.stdio_server - INFO - 已加载 3364 个车站
+2026-05-01 10:15:08,611 - mcp_12306.stdio_server - INFO - MCP Server 已启动，等待客户端连接...
+2026-05-01 10:15:08,615 - mcp.server.lowlevel.server - INFO - Processing request of type ListToolsRequest
+2026-05-01 10:15:09,493 - mcp_12306.utils.config - WARNING - 环境配置文件 C:\Users\86136\Desktop\大模型期末项目\.env 不存在，使用默认配置
+2026-05-01 10:15:09,494 - mcp_12306.utils.config - INFO - 配置加载成功 - 主机: 0.0.0.0, 端口: 8000, 调试模式: False, 日志级别: INFO
+2026-05-01 10:15:09,496 - mcp_12306.stdio_server - INFO - 启动 mcp-server-12306 (stdio 模式)...
+2026-05-01 10:15:09,497 - mcp_12306.stdio_server - INFO - 版本: 0.3.1.post20260211
+2026-05-01 10:15:09,497 - mcp_12306.stdio_server - INFO - 正在加载车站数据...
+2026-05-01 10:15:09,506 - root - INFO - 已加载3364个车站（含城市信息，自动排列修正字段）
+2026-05-01 10:15:09,506 - mcp_12306.stdio_server - INFO - 已加载 3364 个车站
+2026-05-01 10:15:09,509 - mcp_12306.stdio_server - INFO - MCP Server 已启动，等待客户端连接...
+2026-05-01 10:15:09,513 - mcp.server.lowlevel.server - INFO - Processing request of type CallToolRequest
+2026-05-01 10:15:09,515 - mcp_12306.stdio_server - INFO - 调用工具: query-tickets, 参数: {'from_station': '杭州', 'to_station': '南京', 'train_date': '2026-05-01'}
+2026-05-01 10:15:09,515 - mcp_12306.server - INFO - 查询参数: 杭州 -> 南京 (2026-05-01)
+2026-05-01 10:15:09,703 - httpx - INFO - HTTP Request: GET https://kyfw.12306.cn/otn/leftTicket/init "HTTP/1.1 200 OK"
+2026-05-01 10:15:09,763 - httpx - INFO - HTTP Request: GET https://kyfw.12306.cn/otn/leftTicket/queryG?leftTicketDTO.train_date=2026-05-01&leftTicketDTO.from_station=HZH&leftTicketDTO.to_station=NJH&purpose_codes=ADULT "HTTP/1.1 200 OK"
+2026-05-01 10:15:09,897 - mcp_12306.server - INFO - 12306 queryG status: 200, url: https://kyfw.12306.cn/otn/leftTicket/queryG?leftTicketDTO.train_date=2026-05-01&leftTicketDTO.from_station=HZH&leftTicketDTO.to_station=NJH&purpose_codes=ADULT
+2026-05-01 10:15:09,904 - mcp.server.lowlevel.server - INFO - Processing request of type ListToolsRequest

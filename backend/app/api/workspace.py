@@ -47,6 +47,13 @@ def _guest_profile_payload() -> dict:
         "transport_modes": [],
         "pace_tags": [],
         "interest_tags": [],
+        "negative_preferences": [],
+        "explicit_preferences": [],
+        "inferred_preferences": [],
+        "behavior_signals": [],
+        "profile_strength": "new",
+        "budget_profile": None,
+        "recent_evidence": [],
         "recommendation_hint": "游客模式不会保存偏好画像，登录后系统才会自动沉淀你的旅行偏好。",
         "updated_at": None,
     }

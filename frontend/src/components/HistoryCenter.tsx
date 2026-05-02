@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 
 import type { ConversationSummary, ConversationUpdatePayload, PreferenceProfile } from "../lib/types";
+import { PreferenceProfileSnapshot } from "./PreferenceProfileWorkbench";
 
 interface HistoryCenterProps {
   open: boolean;
@@ -280,18 +281,13 @@ export function HistoryCenter({
           </button>
         </div>
 
-        <section className="profile-card archive-profile-card">
-          <div className="section-kicker">
-            <MapPinned size={16} />
-            用户偏好画像
-          </div>
-          <strong>{profile?.recommendation_hint || "暂无稳定偏好，完成几次规划后会自动沉淀。"}</strong>
-          <div className="profile-tags">
-            {profileTags.map((tag) => (
-              <span key={tag}>{tag}</span>
-            ))}
-          </div>
-        </section>
+        <PreferenceProfileSnapshot
+          profile={profile}
+          compact
+          title="用户偏好画像"
+          subtitle="历史筛选和专题聚合会同时参考你的长期偏好。"
+          emptyText="暂无稳定偏好，完成几次规划后会自动沉淀。"
+        />
 
         <section className="archive-stats">
           <div>

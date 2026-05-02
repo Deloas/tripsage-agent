@@ -142,6 +142,26 @@ export interface PreferenceProfile {
   transport_modes: string[];
   pace_tags: string[];
   interest_tags: string[];
+  negative_preferences: string[];
+  explicit_preferences: string[];
+  inferred_preferences: string[];
+  behavior_signals: string[];
+  profile_strength: "new" | "growing" | "strong" | string;
+  budget_profile?: {
+    median?: number | null;
+    lower_bound?: number | null;
+    upper_bound?: number | null;
+    sensitivity?: string | null;
+  } | null;
+  recent_evidence: Array<{
+    dimension: string;
+    value: string;
+    polarity: string;
+    source_type: string;
+    confidence: number;
+    weight: number;
+    created_at: string;
+  }>;
   recommendation_hint: string;
   updated_at?: string | null;
 }

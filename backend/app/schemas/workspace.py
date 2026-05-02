@@ -151,7 +151,7 @@ class GuestSessionPlanVersionInput(BaseModel):
 
 
 class GuestSessionImportRequest(BaseModel):
-    """把游客会话导入某个本地账号。"""
+    """把游客会话导入某一个本地账号。"""
 
     user_id: int = Field(ge=1)
     title: str | None = Field(default=None, max_length=160)
@@ -175,6 +175,27 @@ class GuestSessionImportView(BaseModel):
     imported_plan_version_count: int
 
 
+class BudgetProfileView(BaseModel):
+    """用户预算画像视图。"""
+
+    median: int | None = None
+    lower_bound: int | None = None
+    upper_bound: int | None = None
+    sensitivity: str | None = None
+
+
+class PreferenceEvidenceView(BaseModel):
+    """偏好证据视图。"""
+
+    dimension: str
+    value: str
+    polarity: str
+    source_type: str
+    confidence: float
+    weight: float
+    created_at: str
+
+
 class PreferenceProfileView(BaseModel):
     """用户旅行偏好画像。"""
 
@@ -183,5 +204,12 @@ class PreferenceProfileView(BaseModel):
     transport_modes: list[str] = Field(default_factory=list)
     pace_tags: list[str] = Field(default_factory=list)
     interest_tags: list[str] = Field(default_factory=list)
+    negative_preferences: list[str] = Field(default_factory=list)
+    explicit_preferences: list[str] = Field(default_factory=list)
+    inferred_preferences: list[str] = Field(default_factory=list)
+    behavior_signals: list[str] = Field(default_factory=list)
+    profile_strength: str = "new"
+    budget_profile: BudgetProfileView | None = None
+    recent_evidence: list[PreferenceEvidenceView] = Field(default_factory=list)
     recommendation_hint: str
     updated_at: str | None = None

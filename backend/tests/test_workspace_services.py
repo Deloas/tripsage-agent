@@ -11,6 +11,7 @@ from app.db.models import (
     PlanVersion,
     SharedPlan,
     ToolCall,
+    TravelPreferenceEvent,
     TravelPreferenceProfile,
 )
 from app.schemas.chat import ChatRequest
@@ -82,6 +83,40 @@ def test_preference_profile_learns_from_interaction(db_session) -> None:
     assert HIGH_SPEED_RAIL in profile.transport_modes
     assert RELAXED in profile.pace_tags
     assert FOOD in profile.interest_tags
+
+
+def test_preference_profile_tracks_negative_and_behavior_signals(db_session) -> None:
+    """偏好画像应同时识别负向偏好与真实行为反馈。"""
+    service = PreferenceService(db_session, user_key="42")
+    service.learn_from_interaction(
+        f"{SHANGHAI}出发，预算2000元，不要早班车，别太赶，优先{HIGH_SPEED_RAIL}，想多吃点{FOOD}。",
+        {"answer": f"建议去{NANJING}。", "cards": [{"type": "destination", "title": NANJING}]},
+        slots={"destination": NANJING, "budget": "2000", "days": 2},
+        conversation_id="conv-pref-1",
+    )
+    service.learn_from_interaction(
+        "请基于我刚才采纳的模块继续优化。",
+        {"answer": "", "cards": []},
+        context={
+            "decision_module_action": "accept",
+            "decision_module": {
+                "type": "budget",
+                "title": "预算提示",
+                "summary": "建议控制交通与餐饮总成本",
+                "points": ["预算控制", "少打车"],
+            },
+        },
+        conversation_id="conv-pref-1",
+    )
+
+    profile = service.get_profile()
+    events = db_session.query(TravelPreferenceEvent).filter(TravelPreferenceEvent.user_key == "42").all()
+
+    assert any("早班车" in item for item in profile.negative_preferences)
+    assert any("预算控制" in item for item in profile.behavior_signals)
+    assert profile.profile_strength in {"growing", "strong"}
+    assert profile.recent_evidence
+    assert len(events) >= 4
 
 
 def test_conversation_service_lists_and_reads_history(db_session) -> None:

@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, CloudSun, Link2, MapPinned, Route, TrainFront } from "lucide-react";
+import { AlertTriangle, CloudSun, Link2, MapPinned, Route, TrainFront } from "lucide-react";
 
 import type { ChatResponse, GuideSourceItem, RailwayTrain } from "../lib/types";
 
@@ -18,7 +18,7 @@ function statusLabel(status: string) {
 }
 
 function statusClass(status: string) {
-  // 来源状态与后端 crawl_status 保持一致，方便答辩时解释数据流。
+  // 来源状态与后端 crawl_status 保持一致，便于前后端协同排查。
   if (status === "indexed") return "indexed";
   if (status === "pending") return "pending";
   if (status === "blocked" || status === "failed") return "failed";
@@ -30,19 +30,28 @@ function asTrains(value: unknown): RailwayTrain[] {
   return value.filter((item): item is RailwayTrain => typeof item === "object" && item !== null);
 }
 
-function seatSummary(train: RailwayTrain) {
-  const seats = train.seats || {};
-  const preferred = [
-    ["second_class", "二等"],
-    ["first_class", "一等"],
-    ["business_class", "商务"],
-    ["hard_seat", "硬座"],
-    ["no_seat", "无座"],
-  ];
-  const parts = preferred
-    .map(([key, label]) => (seats[key] ? `${label}${seats[key]}` : null))
-    .filter(Boolean);
-  return parts.slice(0, 3).join(" · ") || "余票以 12306 为准";
+function toMinutesFromTime(value?: string) {
+  if (!value || !value.includes(":")) return Number.POSITIVE_INFINITY;
+  const [hours, minutes] = value.split(":").map(Number);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return Number.POSITIVE_INFINITY;
+  return hours * 60 + minutes;
+}
+
+function toDurationMinutes(value?: string) {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const match = value.match(/(?:(\d+)\s*时)?(?:(\d+)\s*分)?/);
+  if (!match) return Number.POSITIVE_INFINITY;
+  const hours = Number(match[1] || 0);
+  const minutes = Number(match[2] || 0);
+  return hours * 60 + minutes;
+}
+
+function findEarliestTrain(trains: RailwayTrain[]) {
+  return [...trains].sort((left, right) => toMinutesFromTime(left.start_time) - toMinutesFromTime(right.start_time))[0];
+}
+
+function findFastestTrain(trains: RailwayTrain[]) {
+  return [...trains].sort((left, right) => toDurationMinutes(left.duration) - toDurationMinutes(right.duration))[0];
 }
 
 export function InsightPanel({ latest, guideSources }: InsightPanelProps) {
@@ -51,6 +60,8 @@ export function InsightPanel({ latest, guideSources }: InsightPanelProps) {
   const railway = cards.find((card) => card.type === "railway");
   const destination = cards.find((card) => card.type === "destination");
   const trains = asTrains(railway?.meta?.trains);
+  const earliestTrain = findEarliestTrain(trains);
+  const fastestTrain = findFastestTrain(trains);
   const routeCall = latest?.tool_calls.find((call) => call.tool_name === "amap_route");
   const indexedCount = guideSources.filter((source) => source.crawl_status === "indexed").length;
   const pendingCount = guideSources.filter((source) => source.crawl_status === "pending").length;
@@ -60,7 +71,7 @@ export function InsightPanel({ latest, guideSources }: InsightPanelProps) {
       <div className="rail-visual-card insight-visual">
         <span>中国高铁旅行视角</span>
         <strong>{destination?.title || "目的地待确认"}</strong>
-        <em>{trains.length ? `${trains.length} 条铁路候选` : "等待智能体调度"}</em>
+        <em>{trains.length ? `${trains.length} 条铁路候选已进入主工作台` : "等待智能体调度铁路结果"}</em>
       </div>
 
       <section className="insight-summary" aria-label="实时洞察摘要">
@@ -92,35 +103,29 @@ export function InsightPanel({ latest, guideSources }: InsightPanelProps) {
       <section className="insight-section">
         <div className="section-kicker">
           <TrainFront size={16} />
-          铁路
+          铁路摘要
         </div>
         <div className="metric-card rail">
           <strong>{railway?.summary || "等待查询"}</strong>
           <span>
-            {railway?.meta?.date ? `${railway.meta.date} · ` : ""}
-            {latest?.warnings.find((item) => item.includes("铁路")) || "仅查询，不购票，不抢票"}
+            {railway?.meta?.date ? `${railway.meta.date} / ` : ""}
+            完整车次列表已放到中间主工作台，可滚动查看全部结果。
           </span>
         </div>
-        {trains.length ? (
-          <div className="train-board" aria-label="铁路候选车次">
-            {trains.slice(0, 5).map((train, index) => (
-              <div className="train-row" key={`${train.train_no}-${index}`}>
-                <div className="train-code">{train.train_no || "车次"}</div>
-                <div className="train-route">
-                  <strong>{train.from_station || "出发站"}</strong>
-                  <ArrowRight size={13} />
-                  <strong>{train.to_station || "到达站"}</strong>
-                </div>
-                <div className="train-time">
-                  <span>{train.start_time || "--:--"}</span>
-                  <em>{train.duration || "待确认"}</em>
-                  <span>{train.arrive_time || "--:--"}</span>
-                </div>
-                <small>{seatSummary(train)}</small>
-              </div>
-            ))}
+        <div className="rail-quick-stats">
+          <div>
+            <span>候选车次</span>
+            <strong>{trains.length || 0}</strong>
           </div>
-        ) : null}
+          <div>
+            <span>最早出发</span>
+            <strong>{earliestTrain?.start_time || "--:--"}</strong>
+          </div>
+          <div>
+            <span>最快耗时</span>
+            <strong>{fastestTrain?.duration || "--"}</strong>
+          </div>
+        </div>
       </section>
 
       <section className="insight-section">
@@ -155,16 +160,13 @@ export function InsightPanel({ latest, guideSources }: InsightPanelProps) {
         </div>
         <div className="tool-trace">
           {(latest?.tool_calls || []).map((call, index) => (
-            <div
-              className={`tool-row ${call.status}`}
-              key={`${call.tool_name}-${call.output_summary}-${index}`}
-            >
+            <div className={`tool-row ${call.status}`} key={`${call.tool_name}-${call.output_summary}-${index}`}>
               <span>{call.tool_name}</span>
               <strong>{call.status}</strong>
               <small>{call.output_summary}</small>
             </div>
           ))}
-          {!latest?.tool_calls?.length && <div className="empty-line">等待智能体调用</div>}
+          {!latest?.tool_calls?.length && <div className="empty-line">等待智能体调度</div>}
         </div>
       </section>
 

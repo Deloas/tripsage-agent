@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import secrets
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.models import User, utc_now
@@ -16,7 +17,7 @@ from app.services.auth_service import AuthService
 
 
 class UserService:
-    """本地多用户服务，负责用户资料、密码与登录流程。"""
+    """本地多用户服务，负责注册、登录与资料维护。"""
 
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -26,6 +27,7 @@ class UserService:
         user = self.db.query(User).order_by(User.id.asc()).first()
         if user:
             return self._to_view(user)
+
         user = User(
             username="default",
             display_name="默认用户",
@@ -45,18 +47,21 @@ class UserService:
 
     def create_user(self, payload: UserCreateRequest) -> UserView:
         """创建本地用户。"""
-        base = self._slug(payload.username or payload.display_name)
+        display_name = self._require_text(payload.display_name, "显示名称", 80)
+
+        base = self._slug(payload.username or display_name)
         username = base
         index = 1
         while self.db.query(User).filter(User.username == username).first():
             index += 1
             username = f"{base}-{index}"
+
         salt, password_hash = self._build_password_hash(payload.password) if payload.password else (None, None)
         user = User(
             username=username,
             password_salt=salt,
             password_hash=password_hash,
-            display_name=payload.display_name.strip(),
+            display_name=display_name,
             home_city=self._clean_text(payload.home_city, 50),
             travel_style=self._clean_text(payload.travel_style, 200),
             updated_at=utc_now(),
@@ -72,7 +77,7 @@ class UserService:
         client_name: str | None = None,
         user_agent: str | None = None,
     ) -> UserAuthView:
-        """注册并直接签发登录态。"""
+        """注册后直接签发登录态。"""
         user_view = self.create_user(payload)
         user = self.db.get(User, user_view.id)
         if not user:
@@ -85,16 +90,16 @@ class UserService:
         client_name: str | None = None,
         user_agent: str | None = None,
     ) -> UserAuthView:
-        """校验本地账号密码，并签发正式登录会话。"""
-        user = self.db.query(User).filter(User.username == payload.username.strip()).first()
+        """校验账号名或显示名称与密码，并签发正式登录会话。"""
+        identifier = self._normalize_login_identifier(payload.username)
+        if not identifier:
+            raise ValueError("请输入账号名或显示名称")
+
+        user = self._find_login_user(identifier)
         if not user:
             raise ValueError("用户不存在")
-        if user.password_hash and user.password_salt:
-            expected = self._hash_password(payload.password, user.password_salt)
-            if not hmac.compare_digest(expected, user.password_hash):
-                raise ValueError("密码错误")
-        elif payload.password:
-            raise ValueError("该演示用户未设置密码，请留空密码登录")
+
+        self._verify_password(user, payload.password)
 
         user.updated_at = utc_now()
         self.db.commit()
@@ -108,7 +113,7 @@ class UserService:
             raise ValueError("用户不存在")
 
         if payload.display_name is not None:
-            user.display_name = payload.display_name.strip()
+            user.display_name = self._require_text(payload.display_name, "显示名称", 80)
         if payload.home_city is not None:
             user.home_city = self._clean_text(payload.home_city, 50)
         if payload.travel_style is not None:
@@ -127,6 +132,43 @@ class UserService:
         if not user:
             raise ValueError("用户不存在")
         return self._to_view(user)
+
+    def _find_login_user(self, identifier: str) -> User | None:
+        """优先按账号名登录，再回退到显示名称登录。"""
+        exact_username_user = self.db.query(User).filter(User.username == identifier).first()
+        if exact_username_user:
+            return exact_username_user
+
+        # 兼容英文账号名大小写输入不一致的情况，避免用户必须记住大小写。
+        lowered_identifier = identifier.lower()
+        casefold_username_user = (
+            self.db.query(User)
+            .filter(func.lower(User.username) == lowered_identifier)
+            .first()
+        )
+        if casefold_username_user:
+            return casefold_username_user
+
+        display_name_matches = (
+            self.db.query(User)
+            .filter(User.display_name == identifier)
+            .order_by(User.id.asc())
+            .all()
+        )
+        if len(display_name_matches) > 1:
+            raise ValueError("存在多个同名用户，请改用账号名登录")
+        return display_name_matches[0] if display_name_matches else None
+
+    def _verify_password(self, user: User, password: str) -> None:
+        """统一处理有密码和无密码账户的登录校验。"""
+        if user.password_hash and user.password_salt:
+            expected = self._hash_password(password, user.password_salt)
+            if not hmac.compare_digest(expected, user.password_hash):
+                raise ValueError("密码错误")
+            return
+
+        if password:
+            raise ValueError("该演示用户未设置密码，请留空密码登录")
 
     def _change_password(self, user: User, current_password: str, new_password: str) -> None:
         """修改用户密码。"""
@@ -171,8 +213,23 @@ class UserService:
             120_000,
         ).hex()
 
+    def _normalize_login_identifier(self, value: str | None) -> str | None:
+        """统一清洗登录标识，兼容用户输入的空格和 @ 前缀。"""
+        cleaned = self._clean_text(value, 80)
+        if not cleaned:
+            return None
+        normalized = cleaned.lstrip("@").strip()
+        return normalized or None
+
+    def _require_text(self, value: str | None, field_name: str, max_length: int) -> str:
+        """保证关键文本字段在去除空格后仍然有效。"""
+        cleaned = self._clean_text(value, max_length)
+        if cleaned is None:
+            raise ValueError(f"{field_name}不能为空")
+        return cleaned
+
     def _clean_text(self, value: str | None, max_length: int) -> str | None:
         if value is None:
             return None
-        text = str(value).strip()
+        text = str(value).replace("\u3000", " ").strip()
         return text[:max_length] if text else None

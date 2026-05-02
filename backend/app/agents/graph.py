@@ -20,14 +20,14 @@ from app.services.preference_service import PreferenceService
 
 
 class TripAgent:
-    """旅行智能体入口，负责会话持久化和 LangGraph 工作流运行。"""
+    """旅行智能体入口，负责会话持久化与工作流编排。"""
 
     def __init__(self, db: Session) -> None:
         self.db = db
         self.graph = build_trip_graph()
 
     async def run(self, request: ChatRequest) -> ChatResponse:
-        """执行一次智能体对话，并返回前端可展示结构。"""
+        """执行一次智能体对话，并返回结构化响应。"""
         conversation_id = request.conversation_id or uuid4().hex
         context = self._context_with_profile(request.context)
         if self._should_persist_session():
@@ -48,6 +48,7 @@ class TripAgent:
         answer = state.get("final_answer", "我暂时无法完成规划，请稍后重试。")
         if self._should_persist_session():
             self._save_message(conversation_id, "assistant", answer)
+
         response = ChatResponse(
             conversation_id=conversation_id,
             answer=answer,
@@ -59,25 +60,34 @@ class TripAgent:
             warnings=state.get("warnings", []),
             decision_modules=state.get("decision_modules", []),
         )
+
         if self._should_persist_session():
+            slots = state.get("slots", {})
             ConversationService(self.db).sync_archive_meta(
                 conversation_id,
                 request.message,
                 response.model_dump(),
-                state.get("slots", {}),
+                slots,
                 user_id=self._current_user_id(),
             )
-            self._learn_preferences(request.message, response)
+            self._learn_preferences(
+                request.message,
+                response,
+                slots=slots,
+                context=request.context,
+                conversation_id=conversation_id,
+            )
 
         return response
 
     async def run_steps(self, request: ChatRequest):
-        """按节点逐步执行智能体，供 SSE 流式接口推送阶段进度。"""
+        """按节点逐步执行智能体，供流式接口推送阶段状态。"""
         conversation_id = request.conversation_id or uuid4().hex
         context = self._context_with_profile(request.context)
         if self._should_persist_session():
             self._ensure_conversation(conversation_id, request.message)
             self._save_message(conversation_id, "user", request.message)
+
         state = {
             "conversation_id": conversation_id,
             "user_message": request.message,
@@ -96,6 +106,7 @@ class TripAgent:
             ("planner", "调用 DeepSeek 生成规划表达", planner_node),
             ("response", "组装前端决策工作台", response_node),
         ]
+
         yield "start", {"conversation_id": conversation_id, "message": "智能体已开始规划。"}
         for name, label, node in steps:
             yield "stage", {"name": name, "label": label, "status": "running"}
@@ -105,6 +116,7 @@ class TripAgent:
         answer = state.get("final_answer", "我暂时无法完成规划，请稍后重试。")
         if self._should_persist_session():
             self._save_message(conversation_id, "assistant", answer)
+
         response = ChatResponse(
             conversation_id=conversation_id,
             answer=answer,
@@ -116,19 +128,28 @@ class TripAgent:
             warnings=state.get("warnings", []),
             decision_modules=state.get("decision_modules", []),
         )
+
         if self._should_persist_session():
+            slots = state.get("slots", {})
             ConversationService(self.db).sync_archive_meta(
                 conversation_id,
                 request.message,
                 response.model_dump(),
-                state.get("slots", {}),
+                slots,
                 user_id=self._current_user_id(),
             )
-            self._learn_preferences(request.message, response)
+            self._learn_preferences(
+                request.message,
+                response,
+                slots=slots,
+                context=request.context,
+                conversation_id=conversation_id,
+            )
+
         yield "result", response.model_dump()
 
     def _stage_payload(self, name: str, label: str, state: dict) -> dict:
-        """生成可被前端直接显示的阶段摘要。"""
+        """生成供前端直接渲染的阶段摘要。"""
         summaries = {
             "intent_slot": f"识别为 {state.get('intent', 'general_qa')}。",
             "retrieval": f"命中 {len(state.get('retrieved_guides', []))} 条本地攻略片段。",
@@ -151,18 +172,23 @@ class TripAgent:
         }
 
     def _ensure_conversation(self, conversation_id: str, first_message: str) -> None:
-        """如果会话不存在则创建，标题用用户首句截断生成。"""
+        """会话不存在时自动创建。"""
         conversation = self.db.get(Conversation, conversation_id)
         if conversation:
             conversation.updated_at = self._now()
             self.db.commit()
             return
-        user_id = self._current_user_id()
-        self.db.add(Conversation(id=conversation_id, user_id=user_id, title=first_message[:40]))
+        self.db.add(
+            Conversation(
+                id=conversation_id,
+                user_id=self._current_user_id(),
+                title=first_message[:40],
+            )
+        )
         self.db.commit()
 
     def _save_message(self, conversation_id: str, role: str, content: str) -> None:
-        """保存聊天消息，便于后续实现会话回放。"""
+        """保存会话消息。"""
         self.db.add(Message(conversation_id=conversation_id, role=role, content=content))
         conversation = self.db.get(Conversation, conversation_id)
         if conversation:
@@ -170,7 +196,7 @@ class TripAgent:
         self.db.commit()
 
     def _context_with_profile(self, context: dict) -> dict:
-        """把本地偏好画像注入智能体上下文。"""
+        """把偏好画像注入智能体上下文。"""
         self._context_persist_session = bool(context.get("persist_session", True))
         self._context_user_id = context.get("user_id") if self._context_persist_session else None
         if not self._context_persist_session:
@@ -179,10 +205,24 @@ class TripAgent:
         profile = PreferenceService(self.db, user_key=user_key).get_profile()
         return {**context, "preference_profile": profile.model_dump()}
 
-    def _learn_preferences(self, message: str, response: ChatResponse) -> None:
-        """智能体完成后沉淀用户旅行偏好。"""
+    def _learn_preferences(
+        self,
+        message: str,
+        response: ChatResponse,
+        *,
+        slots: dict | None = None,
+        context: dict | None = None,
+        conversation_id: str | None = None,
+    ) -> None:
+        """智能体完成后沉淀用户偏好。"""
         user_key = str(self._last_context_user_id or "default")
-        PreferenceService(self.db, user_key=user_key).learn_from_interaction(message, response.model_dump())
+        PreferenceService(self.db, user_key=user_key).learn_from_interaction(
+            message,
+            response.model_dump(),
+            slots=slots,
+            context=context,
+            conversation_id=conversation_id,
+        )
 
     def _now(self):
         from app.db.models import utc_now

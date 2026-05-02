@@ -1,0 +1,14 @@
+2026-04-28 17:33:58 | INFO | 启动数据初始化完成：{'seed_inserted': 0, 'seed_skipped': 15, 'vector_rebuilt': True, 'weibo_crawl': None}
+INFO:     127.0.0.1:58700 - "GET /api/tools/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58700 - "GET /api/diagnostics HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63220 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63220 - "GET /api/tools/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63220 - "GET /api/diagnostics HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63220 - "GET /api/guides HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63220 - "POST /api/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64211 - "GET /api/tools/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51773 - "GET /api/guides/sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59061 - "GET /api/tools/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64211 - "GET /api/guides/sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54543 - "OPTIONS /api/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54543 - "POST /api/chat HTTP/1.1" 200 OK

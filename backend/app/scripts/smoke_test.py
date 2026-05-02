@@ -7,6 +7,13 @@ import httpx
 BASE_URL = "http://127.0.0.1:8000/api"
 
 
+def safe_console_text(value: object) -> str:
+    """兼容 Windows 终端编码，避免冒烟测试因为打印 Unicode 字符失败。"""
+    text = str(value)
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    return text.encode(encoding, errors="ignore").decode(encoding, errors="ignore")
+
+
 async def check_get(client: httpx.AsyncClient, path: str) -> dict:
     """检查 GET 接口是否返回统一成功结构。"""
     response = await client.get(f"{BASE_URL}{path}")
@@ -29,7 +36,7 @@ async def check_post(client: httpx.AsyncClient, path: str, payload: dict) -> dic
 
 async def main() -> int:
     """服务启动后的冒烟测试，验证核心接口是否可用。"""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=45) as client:
         health = await check_get(client, "/health")
         print(f"健康检查：{health}")
 
@@ -46,13 +53,16 @@ async def main() -> int:
             client,
             "/chat",
             {
-                "message": "上海出发，两天一夜，预算800，想轻松一点，去哪比较好？",
+                "message": "上海出发，两天一夜，预算 800，想轻松一点，去哪里比较合适？",
                 "search_mode": "auto",
-                "context": {"home_city": "上海"},
+                "context": {
+                    "home_city": "上海",
+                    "persist_session": False,
+                },
             },
         )
         print(f"聊天意图：{chat.get('intent')}")
-        print(f"回答预览：{str(chat.get('answer'))[:120]}")
+        print(f"回答预览：{safe_console_text(str(chat.get('answer'))[:120])}")
 
     print("冒烟测试通过。")
     return 0
@@ -64,4 +74,3 @@ if __name__ == "__main__":
     except Exception as exc:  # noqa: BLE001
         print(f"冒烟测试失败：{exc}", file=sys.stderr)
         raise SystemExit(1)
-

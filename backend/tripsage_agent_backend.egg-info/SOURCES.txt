@@ -12,6 +12,7 @@ app/api/guides.py
 app/api/health.py
 app/api/plans.py
 app/api/tools.py
+app/api/workspace.py
 app/core/__init__.py
 app/core/config.py
 app/core/errors.py
@@ -28,6 +29,7 @@ app/schemas/common.py
 app/schemas/guides.py
 app/schemas/plans.py
 app/schemas/tools.py
+app/schemas/workspace.py
 app/scripts/__init__.py
 app/scripts/check_amap.py
 app/scripts/check_deepseek.py
@@ -40,13 +42,17 @@ app/scripts/seed_guides.py
 app/scripts/smoke_test.py
 app/services/__init__.py
 app/services/amap_service.py
+app/services/auth_service.py
 app/services/bootstrap_service.py
+app/services/conversation_service.py
 app/services/guide_ingest_service.py
 app/services/llm_service.py
 app/services/mcp_railway_service.py
 app/services/plan_version_service.py
+app/services/preference_service.py
 app/services/rag_service.py
 app/services/tool_log_service.py
+app/services/user_service.py
 app/services/vector_store_service.py
 app/services/web_search_service.py
 app/services/weibo_crawler_service.py
@@ -59,6 +65,7 @@ tests/test_plan_version_service.py
 tests/test_rag_service.py
 tests/test_railway_mcp_service.py
 tests/test_web_search_service.py
+tests/test_workspace_services.py
 tripsage_agent_backend.egg-info/PKG-INFO
 tripsage_agent_backend.egg-info/SOURCES.txt
 tripsage_agent_backend.egg-info/dependency_links.txt

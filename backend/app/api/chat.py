@@ -27,11 +27,31 @@ def _parse_bearer_token(authorization: str | None) -> str | None:
     return token or None
 
 
+def _coerce_persist_flag(value: object) -> bool | None:
+    """兼容字符串布尔值，避免游客模式被误判为持久化会话。"""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
 def _normalize_request_context(db: Session, payload: ChatRequest, authorization: str | None) -> ChatRequest:
     """用后端鉴权结果重写聊天上下文，避免前端伪造 user_id。"""
     context = dict(payload.context or {})
-    requested_persist = bool(context.get("persist_session", True))
     token = _parse_bearer_token(authorization)
+    requested_persist = _coerce_persist_flag(context.get("persist_session"))
+
+    # 未显式声明时，登录用户默认持久化，游客默认临时会话。
+    if requested_persist is None:
+        requested_persist = bool(token)
+
     if token and requested_persist:
         try:
             auth = AuthService(db).authenticate_access_token(token)

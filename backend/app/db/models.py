@@ -223,3 +223,21 @@ class TravelPreferenceProfile(Base):
     pace_tags_json: Mapped[str] = mapped_column(Text, default="{}")
     interest_tags_json: Mapped[str] = mapped_column(Text, default="{}")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class TravelPreferenceEvent(Base):
+    __tablename__ = "travel_preference_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_key: Mapped[str] = mapped_column(String(80), index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    source_type: Mapped[str] = mapped_column(String(40), index=True)
+    dimension: Mapped[str] = mapped_column(String(40), index=True)
+    value: Mapped[str] = mapped_column(String(120))
+    polarity: Mapped[str] = mapped_column(String(20), default="positive")
+    confidence: Mapped[float] = mapped_column(Float, default=0.8)
+    weight: Mapped[float] = mapped_column(Float, default=1.0)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
