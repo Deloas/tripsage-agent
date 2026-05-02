@@ -17,6 +17,7 @@ import type {
   PlanExportResult,
   PlanVersion,
   PlanVersionCompare,
+  PreferenceFeedbackPayload,
   PreferenceProfile,
   SharedPlan,
   StreamStage,
@@ -407,6 +408,10 @@ export async function importGuestSession(payload: GuestSessionImportPayload): Pr
 
 export async function fetchPreferenceProfile(): Promise<PreferenceProfile> {
   return unwrapRaw(api.get<ApiResponse<PreferenceProfile>>("/preference-profile"));
+}
+
+export async function submitPreferenceFeedback(payload: PreferenceFeedbackPayload): Promise<PreferenceProfile> {
+  return unwrapRaw(api.post<ApiResponse<PreferenceProfile>>("/preference-profile/feedback", payload));
 }
 
 export async function fetchUsers(): Promise<LocalUser[]> {

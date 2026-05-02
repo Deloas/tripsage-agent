@@ -43,6 +43,7 @@ import {
   revokeAuthSession,
   savePlanVersion,
   streamChat,
+  submitPreferenceFeedback,
   updateConversation,
   updateMyProfile,
 } from "./lib/api";
@@ -59,6 +60,7 @@ import type {
   LocalUser,
   PlanVersion,
   PlanVersionCompare,
+  PreferenceFeedbackPayload,
   PreferenceProfile,
   RailwayTrain,
   StreamStage,
@@ -74,6 +76,13 @@ import { PreferenceProfileWorkbench } from "./components/PreferenceProfileWorkbe
 import { SharedPlanPage } from "./components/SharedPlanPage";
 import { TopNav } from "./components/TopNav";
 import { UserCenter } from "./components/UserCenter";
+import { WorkspaceHero } from "./components/WorkspaceHero";
+import {
+  buildPlanningDigest,
+  buildPlanningHighlights,
+  buildPlanningPromptCards,
+  buildWelcomeMessageContent,
+} from "./lib/personalization";
 
 type Message = { role: "user" | "assistant"; content: string };
 type SearchMode = "local_only" | "web_enhanced" | "auto";
@@ -100,6 +109,30 @@ function getInitialWorkspaceView() {
   return isWorkspaceView(view) ? view : "overview";
 }
 
+function resolveWorkspaceHeading(view: WorkspaceView) {
+  const mapping: Record<WorkspaceView, string> = {
+    overview: "旅行决策总览",
+    planning: "可编辑规划工作台",
+    railway: "12306 铁路比选台",
+    evidence: "来源与证据审计",
+    versions: "版本对比与导出",
+    memory: "用户画像与历史中心",
+  };
+  return mapping[view];
+}
+
+function resolveWorkspaceDescription(view: WorkspaceView, guestMode: boolean) {
+  const mapping: Record<WorkspaceView, string> = {
+    overview: "查看当前目的地、铁路、证据与版本概况。",
+    planning: "对话、行程、铁路与偏好在同一工作流中连续协作。",
+    railway: "完整车次池、筛选比选与方案回写。",
+    evidence: "攻略来源、联网结果与工具链路复核。",
+    versions: "保留方案演进轨迹，支持回切、导出与分享。",
+    memory: guestMode ? "游客会话不保留长期记忆。" : "查看画像、历史与长期偏好。",
+  };
+  return mapping[view];
+}
+
 export default function App() {
   const shareId = window.location.hash.startsWith("#/share/")
     ? window.location.hash.replace("#/share/", "")
@@ -112,7 +145,7 @@ export default function App() {
 
   const [status, setStatus] = useState<ToolStatus | null>(null);
   const [conversationId, setConversationId] = useState<string | undefined>();
-  const [messages, setMessages] = useState<Message[]>(buildWelcomeMessages(null, null));
+  const [messages, setMessages] = useState<Message[]>(buildWelcomeMessages(null, null, null));
   const [latest, setLatest] = useState<ChatResponse | null>(null);
   const [guideSources, setGuideSources] = useState<GuideSourceItem[]>([]);
   const [planVersions, setPlanVersions] = useState<PlanVersion[]>([]);
@@ -129,6 +162,7 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [preferenceProfile, setPreferenceProfile] = useState<PreferenceProfile | null>(null);
+  const [preferenceFeedbackLoading, setPreferenceFeedbackLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState<LocalUser | null>(null);
   const [currentSession, setCurrentSession] = useState<AuthSession | null>(null);
   const [authSessions, setAuthSessions] = useState<AuthSession[]>([]);
@@ -306,6 +340,13 @@ export default function App() {
     if (authState) {
       setCurrentUser(authState.user);
       setCurrentSession(authState.session);
+      if (!conversationId && !latest && !planVersions.length) {
+        setMessages((current) => (
+          shouldRefreshWelcomeMessages(current)
+            ? buildWelcomeMessages(authState.user, profile?.recommendation_hint ?? null, profile)
+            : current
+        ));
+      }
     } else {
       setCurrentUser(null);
       setCurrentSession(null);
@@ -430,6 +471,7 @@ export default function App() {
   function handleNewConversation(
     user: LocalUser | null = currentUser,
     recommendationHint: string | null = preferenceProfile?.recommendation_hint ?? null,
+    profile: PreferenceProfile | null = preferenceProfile,
   ) {
     setConversationId(undefined);
     setLatest(null);
@@ -440,7 +482,7 @@ export default function App() {
     setStreamStages([]);
     setRailwayWorkspaceDraft(null);
     setDecisionModuleStates({});
-    setMessages(buildWelcomeMessages(user, recommendationHint));
+    setMessages(buildWelcomeMessages(user, recommendationHint, profile));
   }
 
   async function handleOpenConversation(conversationIdToOpen: string) {
@@ -480,6 +522,31 @@ export default function App() {
     setConversations((current) => current.filter((item) => item.id !== conversationIdToDelete));
     if (conversationId === conversationIdToDelete) {
       handleNewConversation(currentUser, preferenceProfile?.recommendation_hint ?? null);
+    }
+  }
+
+  async function handlePreferenceFeedback(payload: PreferenceFeedbackPayload) {
+    if (!currentUser) {
+      setUserOpen(true);
+      return;
+    }
+
+    setPreferenceFeedbackLoading(true);
+    try {
+      const nextProfile = await submitPreferenceFeedback({
+        ...payload,
+        conversation_id: payload.conversation_id ?? conversationId ?? null,
+      });
+      setPreferenceProfile(nextProfile);
+      if (!conversationId && !latest && !planVersions.length) {
+        setMessages((current) => (
+          shouldRefreshWelcomeMessages(current)
+            ? buildWelcomeMessages(currentUser, nextProfile.recommendation_hint, nextProfile)
+            : current
+        ));
+      }
+    } finally {
+      setPreferenceFeedbackLoading(false);
     }
   }
 
@@ -638,6 +705,7 @@ export default function App() {
     const updated = await updateMyProfile(payload);
     setCurrentUser(updated);
     await refreshSessionList();
+    await refreshWorkspaceMemory(true);
   }
 
   async function handleRevokeSession(sessionId: string) {
@@ -646,7 +714,7 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell app-shell-refined">
       <TopNav
         status={status}
         currentUser={currentUser}
@@ -668,16 +736,42 @@ export default function App() {
         onLogout={() => void handleLogout()}
       />
 
-      <ProductWorkspaceNav
-        currentView={workspaceView}
-        latest={latest}
-        guestMode={guestMode}
-        planVersions={planVersions}
-        guideSources={guideSources}
-        onChange={setWorkspaceView}
-      />
+      <div className="workspace-shell">
+        <WorkspaceSidebarNav
+          currentView={workspaceView}
+          latest={latest}
+          guestMode={guestMode}
+          planVersions={planVersions}
+          guideSources={guideSources}
+          onChange={setWorkspaceView}
+        />
 
-      <section className="product-view-stage" aria-label="旅行决策多工作页">
+        <section className="workspace-main-stage">
+          {workspaceView !== "planning" ? (
+            <section className="workspace-context-banner">
+              <div className="workspace-context-copy">
+                <span className="workspace-context-kicker">中国旅行智能体</span>
+                <strong>{resolveWorkspaceHeading(workspaceView)}</strong>
+                <p>{resolveWorkspaceDescription(workspaceView, guestMode)}</p>
+              </div>
+              <div className="workspace-context-stats">
+                <div>
+                  <span>当前模式</span>
+                  <strong>{latest?.intent || "ready"}</strong>
+                </div>
+                <div>
+                  <span>方案版本</span>
+                  <strong>{planVersions.length}</strong>
+                </div>
+                <div>
+                  <span>本地来源</span>
+                  <strong>{guideSources.length}</strong>
+                </div>
+              </div>
+            </section>
+          ) : null}
+
+          <section className="product-view-stage" aria-label="旅行决策多工作页">
         {workspaceView === "overview" ? (
           <OverviewWorkbench
             latest={latest}
@@ -704,6 +798,8 @@ export default function App() {
             shareUrl={shareUrl}
             guestCarryoverReady={Boolean(guestCarryoverDraft)}
             canShareVersion={Boolean(currentUser)}
+            currentUser={currentUser}
+            preferenceProfile={preferenceProfile}
             railwayWorkspaceDraft={railwayWorkspaceDraft}
             decisionModuleStates={decisionModuleStates}
             onOpenPlanner={() => setPlannerOpen(true)}
@@ -758,7 +854,13 @@ export default function App() {
               versionCompare={versionCompare}
               shareUrl={shareUrl}
               canShareVersion={Boolean(currentUser)}
+              starterPrompts={buildPlanningPromptCards(preferenceProfile, currentUser)}
+              profileHighlights={buildPlanningHighlights(preferenceProfile, 8)}
+              profileDigest={buildPlanningDigest(preferenceProfile)}
               decisionModuleStates={decisionModuleStates}
+              onOpenPlanner={() => setPlannerOpen(true)}
+              onOpenEvidence={() => setInsightOpen(true)}
+              onOpenRailway={() => setWorkspaceView("railway")}
               onOpenUserCenter={() => setUserOpen(true)}
               onSubmit={handlePrompt}
               onOptimizeItinerary={handleOptimizeItinerary}
@@ -810,6 +912,7 @@ export default function App() {
             currentUser={currentUser}
             conversations={conversations}
             profile={preferenceProfile}
+            feedbackLoading={preferenceFeedbackLoading}
             onOpenHistory={() => {
               if (currentUser) {
                 void refreshWorkspaceMemory();
@@ -822,9 +925,12 @@ export default function App() {
               }
               setUserOpen(true);
             }}
+            onPreferenceFeedback={handlePreferenceFeedback}
           />
         ) : null}
-      </section>
+          </section>
+        </section>
+      </div>
 
       <WorkspaceDrawer
         side="left"
@@ -977,7 +1083,7 @@ function ProductWorkspaceNav({
           行迹智策
         </div>
         <h1>中国旅行决策工作台</h1>
-        <p>把规划、车次、证据、版本和用户记忆拆成多个工作页，给高密度决策留出真正舒适的空间。</p>
+        <p>规划、车次、证据、版本与记忆分区协同。</p>
       </div>
       <div className="product-nav-tabs" role="tablist" aria-label="切换工作页">
         {tabs.map((tab) => (
@@ -997,7 +1103,7 @@ function ProductWorkspaceNav({
       </div>
       <div className="product-nav-signal">
         <div>
-          <span>当前模式</span>
+          <span>模式</span>
           <strong>{latest?.intent || "ready"}</strong>
         </div>
         <div>
@@ -1005,11 +1111,81 @@ function ProductWorkspaceNav({
           <strong>{guideSources.length}</strong>
         </div>
         <div>
-          <span>会话身份</span>
-          <strong>{guestMode ? "游客模式" : "已登录"}</strong>
+          <span>账号</span>
+          <strong>{guestMode ? "游客" : "已登录"}</strong>
         </div>
       </div>
     </section>
+  );
+}
+
+function WorkspaceSidebarNav({
+  currentView,
+  latest,
+  guestMode,
+  planVersions,
+  guideSources,
+  onChange,
+}: {
+  currentView: WorkspaceView;
+  latest: ChatResponse | null;
+  guestMode: boolean;
+  planVersions: PlanVersion[];
+  guideSources: GuideSourceItem[];
+  onChange: (view: WorkspaceView) => void;
+}) {
+  const destinationTitle = latest?.cards.find((item) => item.type === "destination")?.title || "等待目的地";
+  const tabs: Array<{ id: WorkspaceView; label: string; icon: ReactNode; count?: number }> = [
+    { id: "overview", label: "总览", icon: <Layers3 size={15} /> },
+    { id: "planning", label: "规划", icon: <ListChecks size={15} />, count: latest?.itinerary?.length || 0 },
+    { id: "railway", label: "铁路", icon: <TrainFront size={15} />, count: getRailwayTrains(latest).length },
+    { id: "evidence", label: "证据", icon: <DatabaseZap size={15} />, count: latest?.sources.length || guideSources.length },
+    { id: "versions", label: "版本", icon: <GitBranch size={15} />, count: planVersions.length },
+    { id: "memory", label: "我的", icon: <ShieldCheck size={15} /> },
+  ];
+
+  return (
+    <aside className="workspace-side-rail" aria-label="产品导航">
+      <div className="workspace-side-hero">
+        <div className="workspace-side-hero-copy">
+          <span className="workspace-side-kicker">
+            <WandSparkles size={14} />
+            TripSage
+          </span>
+          <strong>{destinationTitle}</strong>
+          <p>围绕目的地、行程与车次进行统一决策。</p>
+        </div>
+        <div className="workspace-side-glance">
+          <div>
+            <span>模式</span>
+            <strong>{latest?.intent || "ready"}</strong>
+          </div>
+          <div>
+            <span>账号</span>
+            <strong>{guestMode ? "游客" : "已登录"}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="workspace-side-nav" role="tablist" aria-label="切换工作页">
+        {tabs.map((tab) => (
+          <button
+            type="button"
+            key={tab.id}
+            role="tab"
+            aria-selected={currentView === tab.id}
+            className={`workspace-side-tab ${currentView === tab.id ? "active" : ""}`}
+            onClick={() => onChange(tab.id)}
+          >
+            <div className="workspace-side-tab-main">
+              <span className="workspace-side-tab-icon">{tab.icon}</span>
+              <span>{tab.label}</span>
+            </div>
+            {typeof tab.count === "number" ? <strong>{tab.count}</strong> : <em>进入</em>}
+          </button>
+        ))}
+      </div>
+    </aside>
   );
 }
 
@@ -1031,6 +1207,61 @@ function SignalCard({
   );
 }
 
+function RailwayCompareMatrix({ trains }: { trains: RailwayTrain[] }) {
+  if (!trains.length) {
+    return <div className="summary-list-empty compact-empty">从左侧账本里挑 2 到 3 条车次加入对比。</div>;
+  }
+
+  const earliest = findEarliestAppTrain(trains);
+  const fastest = findFastestAppTrain(trains);
+  const recommended = resolveAppPreferredTrain(trains);
+  const rows = [
+    { label: "车次", render: (train: RailwayTrain) => train.train_no || "车次" },
+    { label: "区间", render: (train: RailwayTrain) => `${train.from_station || "出发站"} → ${train.to_station || "到达站"}` },
+    { label: "出发", render: (train: RailwayTrain) => train.start_time || "--:--" },
+    { label: "到达", render: (train: RailwayTrain) => train.arrive_time || "--:--" },
+    { label: "耗时", render: (train: RailwayTrain) => train.duration || "--" },
+    { label: "余票", render: (train: RailwayTrain) => (appHasAvailableSeat(train) ? "较稳" : "待确认") },
+    { label: "座席", render: (train: RailwayTrain) => appSeatSummary(train) },
+    { label: "标签", render: (train: RailwayTrain) => getAppTrainTags(train, earliest, fastest).join(" · ") },
+  ];
+
+  return (
+    <div className="railway-compare-matrix-shell">
+      <div className="railway-compare-recommendation">
+        <span>综合建议</span>
+        <strong>{recommended?.train_no || "待形成"}</strong>
+        <em>{recommended ? `${recommended.start_time || "--:--"} 出发 · ${recommended.duration || "待确认"}` : "选择更多车次后自动生成。"}</em>
+      </div>
+
+      <div className="railway-compare-matrix" style={{ gridTemplateColumns: `132px repeat(${trains.length}, minmax(0, 1fr))` }}>
+        <div className="railway-compare-matrix-label head">维度</div>
+        {trains.map((train) => (
+          <div
+            key={`head-${getAppTrainKey(train)}`}
+            className={`railway-compare-matrix-cell head ${recommended && getAppTrainKey(recommended) === getAppTrainKey(train) ? "recommended" : ""}`}
+          >
+            <strong>{train.train_no || "车次"}</strong>
+            <span>{train.from_station || "出发站"} → {train.to_station || "到达站"}</span>
+          </div>
+        ))}
+
+        {rows.flatMap((row) => [
+          <div key={`label-${row.label}`} className="railway-compare-matrix-label">{row.label}</div>,
+          ...trains.map((train) => (
+            <div
+              key={`${row.label}-${getAppTrainKey(train)}`}
+              className={`railway-compare-matrix-cell ${recommended && getAppTrainKey(recommended) === getAppTrainKey(train) ? "recommended" : ""}`}
+            >
+              {row.render(train)}
+            </div>
+          )),
+        ])}
+      </div>
+    </div>
+  );
+}
+
 function PlanningWorkbench({
   latest,
   searchMode,
@@ -1044,6 +1275,8 @@ function PlanningWorkbench({
   shareUrl,
   guestCarryoverReady,
   canShareVersion,
+  currentUser,
+  preferenceProfile,
   railwayWorkspaceDraft,
   decisionModuleStates,
   onOpenPlanner,
@@ -1070,6 +1303,8 @@ function PlanningWorkbench({
   shareUrl: string | null;
   guestCarryoverReady: boolean;
   canShareVersion: boolean;
+  currentUser: LocalUser | null;
+  preferenceProfile: PreferenceProfile | null;
   railwayWorkspaceDraft: RailwayWorkspaceDraft | null;
   decisionModuleStates: Record<string, DecisionModuleState>;
   onOpenPlanner: () => void;
@@ -1087,87 +1322,22 @@ function PlanningWorkbench({
   const trains = getRailwayTrains(latest);
   const latestStage = streamStages[streamStages.length - 1];
   const activeVersion = planVersions.find((item) => item.id === activeVersionId) || null;
-  const modeLabel =
-    searchMode === "auto" ? "自动检索" : searchMode === "local_only" ? "仅攻略库" : "联网增强";
+  const starterPrompts = buildPlanningPromptCards(preferenceProfile, currentUser);
+  const profileHighlights = buildPlanningHighlights(preferenceProfile, 8);
+  const profileDigest = buildPlanningDigest(preferenceProfile);
+  const displayName = currentUser?.display_name || currentUser?.username || "当前用户";
+  const modeLabel = searchMode === "auto" ? "自动检索" : searchMode === "local_only" ? "仅攻略库" : "联网增强";
 
   return (
     <div className="view-frame planning-page">
-      <section className="page-band planning-hero-band">
-        <div className="planning-hero-copy">
-          <div className="section-kicker">
-            <ListChecks size={16} />
-            规划工作页
-          </div>
-          <h2>把对话、可编辑行程和实时工具调度放进同一条规划主线</h2>
-          <p>这里保留深度交互能力，但把铁路、证据、版本和用户记忆拆到了独立工作页，规划本身终于有了完整而舒适的主舞台。</p>
-          <div className="overview-action-row planning-hero-actions">
-            <button type="button" className="primary-action" onClick={onOpenPlanner}>
-              <PanelLeftOpen size={15} />
-              打开条件面板
-            </button>
-            <button type="button" className="secondary-action" onClick={onOpenEvidence}>
-              <PanelRightOpen size={15} />
-              打开证据抽屉
-            </button>
-            <button type="button" className="secondary-action" onClick={() => onJump("railway")}>
-              <TrainFront size={15} />
-              前往铁路页
-            </button>
-          </div>
-        </div>
-
-        <div className="planning-quick-grid">
-          <SignalCard icon={<Layers3 size={16} />} label="当前版本" value={activeVersion?.name || "尚未生成"} />
-          <SignalCard icon={<Route size={16} />} label="检索模式" value={modeLabel} />
-          <SignalCard icon={<TrainFront size={16} />} label="列车候选" value={`${trains.length}`} />
-          <SignalCard icon={<DatabaseZap size={16} />} label="证据与工具" value={`${latest?.sources.length || 0} / ${latest?.tool_calls.length || 0}`} />
-        </div>
-      </section>
-
-      <section className="page-band planning-command-strip">
-        <div className="planning-command-pill">
-          <Clock3 size={14} />
-          <div>
-            <span>实时调度</span>
-            <strong>
-              {loading
-                ? "智能体正在调用工具"
-                : latestStage?.summary || "等待新的规划任务"}
-            </strong>
-          </div>
-        </div>
-        <div className="planning-command-pill">
-          <GitBranch size={14} />
-          <div>
-            <span>版本对比</span>
-            <strong>{versionCompare?.title || `已累计 ${planVersions.length} 个版本`}</strong>
-          </div>
-        </div>
-        <div className="planning-command-pill">
-          <ShieldCheck size={14} />
-          <div>
-            <span>会话状态</span>
-            <strong>{guestMode ? "游客模式，默认不保存历史" : "已登录，可沉淀偏好与历史"}</strong>
-          </div>
-        </div>
-        <div className="planning-command-pill actionable">
-          <button type="button" className="quiet-link-button" onClick={() => onJump("versions")}>
-            打开版本页
-          </button>
-          <button type="button" className="quiet-link-button" onClick={onOpenUserCenter}>
-            {guestMode && guestCarryoverReady ? "登录保存本次方案" : "打开用户中心"}
-          </button>
-        </div>
-      </section>
-
       {railwayWorkspaceDraft ? (
-        <section className="page-band planning-rail-sync-band">
+        <section className="page-band planning-rail-sync-band compact">
           <div className="planning-rail-sync-copy">
             <div className="section-kicker">
               <TrainFront size={15} />
               铁路工作台回写
             </div>
-            <h3>铁路页已整理出可直接回写到规划页的交通决策结果</h3>
+            <h3>铁路页已经整理出可直接回写到规划页的交通决策结果</h3>
             <p>{railwayWorkspaceDraft.summary}</p>
             <div className="planning-rail-chip-row">
               {railwayWorkspaceDraft.compare_trains.map((train) => (
@@ -1181,7 +1351,7 @@ function PlanningWorkbench({
           <div className="planning-rail-sync-actions">
             <button type="button" className="primary-action" onClick={onApplyRailwayDraft}>
               <WandSparkles size={15} />
-              写回并继续优化
+              回写并继续优化
             </button>
             <button type="button" className="secondary-action" onClick={() => onJump("railway")}>
               <TrainFront size={15} />
@@ -1191,30 +1361,7 @@ function PlanningWorkbench({
         </section>
       ) : null}
 
-      <div className="product-workbench-shell product-planning-shell">
-        <div className="workbench-side-dock" aria-label="规划工作页侧栏快捷操作">
-          <button
-            type="button"
-            className="rail-toggle-button"
-            onClick={onOpenPlanner}
-            title="打开规划条件"
-            aria-label="打开规划条件"
-          >
-            <PanelLeftOpen size={18} />
-            <span>条件</span>
-          </button>
-          <button
-            type="button"
-            className="rail-toggle-button"
-            onClick={onOpenEvidence}
-            title="打开工具与证据"
-            aria-label="打开工具与证据"
-          >
-            <PanelRightOpen size={18} />
-            <span>证据</span>
-          </button>
-        </div>
-
+      <div className="planning-workbench-stage">
         <ChatWorkspace
           messages={messages}
           latest={latest}
@@ -1228,7 +1375,13 @@ function PlanningWorkbench({
           versionCompare={versionCompare}
           shareUrl={shareUrl}
           canShareVersion={canShareVersion}
+          starterPrompts={starterPrompts}
+          profileHighlights={profileHighlights}
+          profileDigest={profileDigest}
           decisionModuleStates={decisionModuleStates}
+          onOpenPlanner={onOpenPlanner}
+          onOpenEvidence={onOpenEvidence}
+          onOpenRailway={() => onJump("railway")}
           onOpenUserCenter={onOpenUserCenter}
           onSubmit={onSubmit}
           onOptimizeItinerary={onOptimizeItinerary}
@@ -1241,7 +1394,6 @@ function PlanningWorkbench({
     </div>
   );
 }
-
 function OverviewWorkbench({
   latest,
   streamStages,
@@ -1261,18 +1413,25 @@ function OverviewWorkbench({
 }) {
   const trains = getRailwayTrains(latest);
   const cards = latest?.cards || [];
+  const destinationTitle = cards.find((item) => item.type === "destination")?.title || "等待本次旅行目的地";
+  const answerLead = latest?.answer?.split("\n").find((item) => item.trim()) || "开始一次新规划后，这里会先提炼最关键的旅行结论。";
+  const highlightBadges = [
+    searchMode === "auto" ? "自动检索" : searchMode === "local_only" ? "仅攻略库" : "联网增强",
+    trains.length ? `${trains.length} 条车次候选` : "等待铁路结果",
+    guestMode ? "游客会话" : "长期记忆已连接",
+  ];
 
   return (
     <div className="view-frame overview-page">
-      <section className="overview-hero-band">
-        <div className="overview-hero-copy">
-          <div className="section-kicker">
-            <ShieldCheck size={16} />
-            决策总览
-          </div>
-          <h2>{cards.find((item) => item.type === "destination")?.title || "等待本次旅行目的地"}</h2>
-          <p>{latest?.answer?.split("\n").find((item) => item.trim()) || "开始一次新规划后，这里会先提炼最关键的旅行结论。"}</p>
-          <div className="overview-action-row">
+      <WorkspaceHero
+        tone="overview"
+        icon={<ShieldCheck size={16} />}
+        kicker="决策总览"
+        title={destinationTitle}
+        description={answerLead}
+        badges={highlightBadges}
+        actions={(
+          <>
             <button type="button" className="primary-action" onClick={() => onJump("planning")}>
               <ListChecks size={15} />
               进入规划
@@ -1285,15 +1444,26 @@ function OverviewWorkbench({
               <DatabaseZap size={15} />
               查看证据
             </button>
+          </>
+        )}
+        signals={(
+          <div className="overview-signal-grid">
+            <SignalCard icon={<Route size={16} />} label="检索模式" value={searchMode === "auto" ? "自动检索" : searchMode === "local_only" ? "仅攻略库" : "联网增强"} />
+            <SignalCard icon={<TrainFront size={16} />} label="车次候选" value={`${trains.length}`} />
+            <SignalCard icon={<GitBranch size={16} />} label="方案版本" value={`${planVersions.length}`} />
+            <SignalCard icon={<Link2 size={16} />} label="本地来源" value={`${guideSources.length}`} />
           </div>
-        </div>
-        <div className="overview-signal-grid">
-          <SignalCard icon={<Route size={16} />} label="检索模式" value={searchMode === "auto" ? "自动检索" : searchMode === "local_only" ? "仅攻略库" : "联网增强"} />
-          <SignalCard icon={<TrainFront size={16} />} label="车次候选" value={`${trains.length}`} />
-          <SignalCard icon={<GitBranch size={16} />} label="方案版本" value={`${planVersions.length}`} />
-          <SignalCard icon={<Link2 size={16} />} label="本地来源" value={`${guideSources.length}`} />
-        </div>
-      </section>
+        )}
+        visualEyebrow="全局态势"
+        visualTitle={planVersions.length ? "方案持续迭代中" : "等待首版方案"}
+        visualDetail={latest?.warnings?.length ? `${latest.warnings.length} 条风险提醒待复核` : "当前首屏聚焦目的地、铁路、证据与版本概况。"}
+        visualMetrics={[
+          { label: "来源", value: String(latest?.sources.length || 0) },
+          { label: "工具", value: String(latest?.tool_calls.length || 0) },
+          { label: "决策模块", value: String(latest?.decision_modules.length || 0) },
+          { label: "会话状态", value: guestMode ? "游客" : "已登录" },
+        ]}
+      />
 
       <section className="page-band">
         <div className="band-head">
@@ -1316,7 +1486,7 @@ function OverviewWorkbench({
       </section>
 
       <section className="overview-grid">
-        <article className="page-band">
+        <article className="page-band overview-card-surface emphasis">
           <div className="band-head">
             <div className="section-kicker">
               <TrainFront size={15} />
@@ -1340,7 +1510,7 @@ function OverviewWorkbench({
           </div>
         </article>
 
-        <article className="page-band">
+        <article className="page-band overview-card-surface">
           <div className="band-head">
             <div className="section-kicker">
               <DatabaseZap size={15} />
@@ -1359,7 +1529,7 @@ function OverviewWorkbench({
           </div>
         </article>
 
-        <article className="page-band">
+        <article className="page-band overview-card-surface">
           <div className="band-head">
             <div className="section-kicker">
               <GitBranch size={15} />
@@ -1378,7 +1548,7 @@ function OverviewWorkbench({
           </div>
         </article>
 
-        <article className="page-band">
+        <article className="page-band overview-card-surface">
           <div className="band-head">
             <div className="section-kicker">
               <ShieldCheck size={15} />
@@ -1389,7 +1559,7 @@ function OverviewWorkbench({
           <div className="summary-stat-grid">
             <div>
               <span>身份</span>
-              <strong>{guestMode ? "游客模式" : "登录用户"}</strong>
+              <strong>{guestMode ? "游客" : "已登录"}</strong>
             </div>
             <div>
               <span>风险提醒</span>
@@ -1420,6 +1590,7 @@ function RailwayDecisionPage({
   const trains = getRailwayTrains(latest);
   const fastest = findFastestAppTrain(trains);
   const earliest = findEarliestAppTrain(trains);
+  const railwayCard = latest?.cards.find((item) => item.type === "railway") || null;
   const [sortMode, setSortMode] = useState<"departure" | "duration" | "train_no">("departure");
   const [trainTypeFilter, setTrainTypeFilter] = useState<"all" | "high_speed" | "normal">("all");
   const [seatFilter, setSeatFilter] = useState<"all" | "available">("all");
@@ -1449,13 +1620,16 @@ function RailwayDecisionPage({
   }, [filteredTrains, sortMode]);
 
   const compareTrains = useMemo(
-    () => compareKeys.map((key) => trains.find((train, index) => getAppTrainKey(train, index) === key)).filter(Boolean) as RailwayTrain[],
+    () => compareKeys.map((key) => trains.find((train) => getAppTrainKey(train) === key)).filter(Boolean) as RailwayTrain[],
     [compareKeys, trains],
   );
   const candidateTrains = useMemo(
-    () => candidateKeys.map((key) => trains.find((train, index) => getAppTrainKey(train, index) === key)).filter(Boolean) as RailwayTrain[],
+    () => candidateKeys.map((key) => trains.find((train) => getAppTrainKey(train) === key)).filter(Boolean) as RailwayTrain[],
     [candidateKeys, trains],
   );
+  const filteredKeys = useMemo(() => sorted.map((train) => getAppTrainKey(train)), [sorted]);
+  const compareRecommendation = useMemo(() => resolveAppPreferredTrain(compareTrains), [compareTrains]);
+  const railDate = typeof railwayCard?.meta?.date === "string" ? railwayCard.meta.date : "日期待确认";
 
   useEffect(() => {
     if (!compareTrains.length && !candidateTrains.length) {
@@ -1486,109 +1660,166 @@ function RailwayDecisionPage({
     });
   }
 
+  // 把当前筛选结果一键推入候选池，方便用户做批量决策与统一回写。
+  function addFilteredToCandidatePool() {
+    if (!filteredKeys.length) return;
+    setCandidateKeys((current) => Array.from(new Set([...current, ...filteredKeys])));
+  }
+
+  function clearCandidatePool() {
+    setCandidateKeys([]);
+  }
+
+  function clearComparePool() {
+    setCompareKeys([]);
+  }
+
+  function removeCandidate(key: string) {
+    setCandidateKeys((current) => current.filter((item) => item !== key));
+  }
+
   return (
     <div className="view-frame railway-page">
-      <section className="page-band railway-page-hero">
-        <div>
-          <div className="section-kicker">
-            <TrainFront size={16} />
-            铁路比选页
+      <WorkspaceHero
+        tone="railway"
+        icon={<TrainFront size={16} />}
+        kicker="铁路决策台"
+        title={railwayCard?.title || "等待铁路查询"}
+        description={railwayCard?.summary || "完整车次池、筛选、对比与回写都在这一页集中处理。"}
+        badges={[
+          railDate,
+          sortMode === "departure" ? "按出发排序" : sortMode === "duration" ? "按耗时排序" : "按车次排序",
+          seatFilter === "available" ? "仅看有票" : "余票不限",
+        ]}
+        actions={(
+          <>
+            <button type="button" className="primary-action" onClick={addFilteredToCandidatePool} disabled={!sorted.length}>
+              <Layers3 size={15} />
+              当前筛选加入候选池
+            </button>
+            <button type="button" className="secondary-action" onClick={onSyncToPlanning} disabled={!candidateTrains.length && !compareTrains.length}>
+              <ListChecks size={15} />
+              写回规划页
+            </button>
+            <button type="button" className="secondary-action" onClick={() => onAdoptTrain(buildAppBatchAdoptionPrompt(candidateTrains))} disabled={!candidateTrains.length}>
+              <WandSparkles size={15} />
+              批量纳入方案
+            </button>
+          </>
+        )}
+        signals={(
+          <div className="overview-signal-grid railway-hero-signal-grid">
+            <SignalCard icon={<TrainFront size={16} />} label="总车次" value={`${trains.length}`} />
+            <SignalCard icon={<Route size={16} />} label="筛选结果" value={`${sorted.length}`} />
+            <SignalCard icon={<Layers3 size={16} />} label="候选池" value={`${candidateTrains.length}`} />
+            <SignalCard icon={<Clock3 size={16} />} label="对比位" value={`${compareTrains.length} / 3`} />
           </div>
-          <h2>{latest?.cards.find((item) => item.type === "railway")?.title || "等待铁路查询"}</h2>
-          <p>把全部候选车次放在一个独立工作页，不再让聊天、版本和证据与它争抢首屏空间。</p>
+        )}
+        visualEyebrow="铁路镜像"
+        visualTitle={compareRecommendation?.train_no ? `${compareRecommendation.train_no} 暂居优先` : "等待形成比选结论"}
+        visualDetail={compareRecommendation ? `${compareRecommendation.from_station || "出发站"} → ${compareRecommendation.to_station || "到达站"} · ${compareRecommendation.duration || "待确认"}` : "选择 2 到 3 条车次后，这里会自动生成更清晰的比选视角。"}
+        visualMetrics={[
+          { label: "最早出发", value: earliest?.start_time || "--:--" },
+          { label: "最快耗时", value: fastest?.duration || "--" },
+          { label: "余票较稳", value: String(sorted.filter((train) => appHasAvailableSeat(train)).length) },
+          { label: "可回写", value: candidateTrains.length || compareTrains.length ? "已就绪" : "待形成" },
+        ]}
+      />
+
+      <section className="page-band railway-control-band sticky-railway-control">
+        <div className="railway-control-main">
+          <div className="railway-filter-group">
+            <div className="section-kicker">
+              <SlidersHorizontal size={15} />
+              车次筛选
+            </div>
+            <div className="railway-filter-row">
+              <div className="railway-chip-group" role="group" aria-label="列车类型筛选">
+                {[
+                  { value: "all", label: "全部" },
+                  { value: "high_speed", label: "高铁优先" },
+                  { value: "normal", label: "普速" },
+                ].map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    className={`railway-filter-chip ${trainTypeFilter === item.value ? "active" : ""}`}
+                    onClick={() => setTrainTypeFilter(item.value as "all" | "high_speed" | "normal")}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              <div className="railway-chip-group" role="group" aria-label="余票筛选">
+                {[
+                  { value: "all", label: "余票不限" },
+                  { value: "available", label: "仅看有票" },
+                ].map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    className={`railway-filter-chip ${seatFilter === item.value ? "active" : ""}`}
+                    onClick={() => setSeatFilter(item.value as "all" | "available")}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              <div className="railway-chip-group" role="group" aria-label="车次排序">
+                {[
+                  { value: "departure", label: "按出发" },
+                  { value: "duration", label: "按耗时" },
+                  { value: "train_no", label: "按车次" },
+                ].map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    className={`railway-filter-chip ${sortMode === item.value ? "active" : ""}`}
+                    onClick={() => setSortMode(item.value as "departure" | "duration" | "train_no")}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
-        <div className="summary-stat-grid">
-          <div>
-            <span>总车次</span>
-            <strong>{trains.length}</strong>
+
+        <div className="railway-control-side">
+          <div className="railway-decision-signals">
+            <SignalCard icon={<TrainFront size={16} />} label="筛选后车次" value={`${sorted.length}`} />
+            <SignalCard icon={<Layers3 size={16} />} label="候选方案池" value={`${candidateTrains.length}`} />
+            <SignalCard icon={<Route size={16} />} label="对比栏" value={`${compareTrains.length} / 3`} />
           </div>
-          <div>
-            <span>最早出发</span>
-            <strong>{earliest?.start_time || "--:--"}</strong>
-          </div>
-          <div>
-            <span>最短耗时</span>
-            <strong>{fastest?.duration || "--"}</strong>
+          <div className="railway-control-actions">
+            <button type="button" className="secondary-action" onClick={addFilteredToCandidatePool} disabled={!sorted.length}>
+              全部加入候选池
+            </button>
+            <button type="button" className="secondary-action" onClick={clearComparePool} disabled={!compareTrains.length}>
+              清空对比
+            </button>
+            <button type="button" className="secondary-action" onClick={clearCandidatePool} disabled={!candidateTrains.length}>
+              清空候选池
+            </button>
           </div>
         </div>
       </section>
 
-      <section className="page-band railway-control-band">
-        <div className="railway-filter-group">
-          <div className="section-kicker">
-            <SlidersHorizontal size={15} />
-            高级筛选
-          </div>
-          <div className="railway-filter-row">
-            <div className="railway-chip-group" role="group" aria-label="列车类型筛选">
-              {[
-                { value: "all", label: "全部" },
-                { value: "high_speed", label: "高铁优先" },
-                { value: "normal", label: "普速" },
-              ].map((item) => (
-                <button
-                  key={item.value}
-                  type="button"
-                  className={`railway-filter-chip ${trainTypeFilter === item.value ? "active" : ""}`}
-                  onClick={() => setTrainTypeFilter(item.value as "all" | "high_speed" | "normal")}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            <div className="railway-chip-group" role="group" aria-label="余票筛选">
-              {[
-                { value: "all", label: "全部余票" },
-                { value: "available", label: "仅看有票" },
-              ].map((item) => (
-                <button
-                  key={item.value}
-                  type="button"
-                  className={`railway-filter-chip ${seatFilter === item.value ? "active" : ""}`}
-                  onClick={() => setSeatFilter(item.value as "all" | "available")}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="railway-filter-group">
-          <div className="section-kicker">
-            <Clock3 size={15} />
-            排序方式
-          </div>
-          <div className="railway-chip-group" role="group" aria-label="车次排序">
-            {[
-              { value: "departure", label: "按出发" },
-              { value: "duration", label: "按耗时" },
-              { value: "train_no", label: "按车次" },
-            ].map((item) => (
-              <button
-                key={item.value}
-                type="button"
-                className={`railway-filter-chip ${sortMode === item.value ? "active" : ""}`}
-                onClick={() => setSortMode(item.value as "departure" | "duration" | "train_no")}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="railway-decision-signals">
-          <SignalCard icon={<TrainFront size={16} />} label="筛选后车次" value={`${sorted.length}`} />
-          <SignalCard icon={<Layers3 size={16} />} label="候选方案池" value={`${candidateTrains.length}`} />
-          <SignalCard icon={<Route size={16} />} label="对比栏" value={`${compareTrains.length} / 3`} />
-        </div>
-      </section>
-
-      <div className="railway-decision-grid">
+      <div className="railway-decision-grid refined">
         <section className="railway-ledger-shell">
           <div className="railway-ledger-head">
-            <strong>车次总表</strong>
-            <span>{sorted.length ? "支持比较、加入候选池并直接纳入方案" : "暂无符合筛选条件的车次"}</span>
+            <div>
+              <strong>车次账本</strong>
+              <span>{sorted.length ? "支持对比、加入候选池与批量回写" : "暂无符合筛选条件的车次"}</span>
+            </div>
+            <div className="railway-ledger-head-actions">
+              <button type="button" className="quiet-link-button" onClick={addFilteredToCandidatePool} disabled={!sorted.length}>
+                推入候选池
+              </button>
+              <button type="button" className="quiet-link-button" onClick={() => onAdoptTrain(buildAppBatchAdoptionPrompt(candidateTrains))} disabled={!candidateTrains.length}>
+                批量纳入
+              </button>
+            </div>
           </div>
           <div className="railway-ledger-table">
             {sorted.map((train, index) => {
@@ -1643,29 +1874,15 @@ function RailwayDecisionPage({
         </section>
 
         <aside className="railway-side-console">
-          <section className="page-band railway-console-panel">
+          <section className="page-band railway-console-panel emphasis">
             <div className="band-head">
               <div className="section-kicker">
                 <Route size={15} />
-                多车次对比
+                对比矩阵
               </div>
               <span>最多保留 3 条</span>
             </div>
-            <div className="railway-compare-stack">
-              {compareTrains.map((train, index) => (
-                <article className="railway-compare-card" key={`${train.train_no}-${index}`}>
-                  <strong>{train.train_no || "车次"}</strong>
-                  <span>{train.from_station || "出发站"} → {train.to_station || "到达站"}</span>
-                  <div className="railway-compare-metrics">
-                    <div><span>出发</span><strong>{train.start_time || "--:--"}</strong></div>
-                    <div><span>耗时</span><strong>{train.duration || "--"}</strong></div>
-                    <div><span>余票</span><strong>{appHasAvailableSeat(train) ? "较稳" : "待确认"}</strong></div>
-                  </div>
-                  <p>{appSeatSummary(train)}</p>
-                </article>
-              ))}
-              {!compareTrains.length ? <div className="summary-list-empty compact-empty">从左侧账本里挑 2 到 3 条车次加入对比。</div> : null}
-            </div>
+            <RailwayCompareMatrix trains={compareTrains} />
             {compareTrains.length >= 2 ? (
               <div className="railway-console-action-row">
                 <button type="button" className="primary-action wide" onClick={() => onAdoptTrain(buildAppComparePrompt(compareTrains))}>
@@ -1684,25 +1901,35 @@ function RailwayDecisionPage({
             <div className="band-head">
               <div className="section-kicker">
                 <Layers3 size={15} />
-                候选方案池
+                批量决策池
               </div>
-              <span>把备选路线集中收纳</span>
+              <span>统一承接待纳入的车次</span>
+            </div>
+            <div className="railway-batch-summary">
+              <div>
+                <span>主推基准</span>
+                <strong>{resolveAppPreferredTrain(candidateTrains)?.train_no || "待形成"}</strong>
+              </div>
+              <div>
+                <span>批量候选</span>
+                <strong>{candidateTrains.length}</strong>
+              </div>
+              <div>
+                <span>回写状态</span>
+                <strong>{candidateTrains.length ? "可执行" : "待整理"}</strong>
+              </div>
             </div>
             <div className="railway-candidate-pool">
               {candidateTrains.map((train, index) => (
                 <article className="railway-pool-item" key={`${train.train_no}-${index}`}>
                   <div>
                     <strong>{train.train_no || "车次"}</strong>
-                    <span>{train.start_time || "--:--"} 出发 · {train.duration || "--"}</span>
+                    <span>{train.from_station || "出发站"} → {train.to_station || "到达站"} · {train.start_time || "--:--"} 出发 · {train.duration || "--"}</span>
                   </div>
                   <button
                     type="button"
                     className="railway-mini-action active"
-                    onClick={() =>
-                      setCandidateKeys((current) =>
-                        current.filter((item) => item !== getAppTrainKey(train, trains.findIndex((candidateTrain) => candidateTrain === train))),
-                      )
-                    }
+                    onClick={() => removeCandidate(getAppTrainKey(train))}
                   >
                     移出
                   </button>
@@ -1712,9 +1939,13 @@ function RailwayDecisionPage({
             </div>
             {candidateTrains.length ? (
               <div className="railway-console-action-row">
-                <button type="button" className="primary-action wide" onClick={() => onAdoptTrain(buildAppCandidatePoolPrompt(candidateTrains))}>
+                <button type="button" className="primary-action wide" onClick={() => onAdoptTrain(buildAppBatchAdoptionPrompt(candidateTrains))}>
                   <TrainFront size={15} />
-                  一键生成候选池方案
+                  批量纳入方案
+                </button>
+                <button type="button" className="primary-action wide" onClick={() => onAdoptTrain(buildAppCandidatePoolPrompt(candidateTrains))}>
+                  <WandSparkles size={15} />
+                  生成备选分支
                 </button>
                 <button type="button" className="secondary-action wide" onClick={onSyncToPlanning}>
                   <ListChecks size={15} />
@@ -2051,7 +2282,7 @@ function VersionWorkbench({
           })}
           {!planVersions.length ? <div className="summary-list-empty">还没有任何版本，先在规划页生成方案。</div> : null}
         </div>
-        {guestMode ? <div className="version-login-hint">游客模式下版本仅保留在当前浏览器页面，登录后可保存到历史中心。</div> : null}
+        {guestMode ? <div className="version-login-hint">游客会话的版本不会写入历史中心。</div> : null}
         {shareUrl ? <div className="share-url-strip"><Link2 size={14} /><span>{shareUrl}</span><strong>已复制</strong></div> : null}
         {versionCompare ? (
           <div className="version-compare-wide">
@@ -2105,15 +2336,19 @@ function MemoryWorkbench({
   currentUser,
   conversations,
   profile,
+  feedbackLoading,
   onOpenHistory,
   onOpenUserCenter,
+  onPreferenceFeedback,
 }: {
   guestMode: boolean;
   currentUser: LocalUser | null;
   conversations: ConversationSummary[];
   profile: PreferenceProfile | null;
+  feedbackLoading: boolean;
   onOpenHistory: () => void;
   onOpenUserCenter: () => void;
+  onPreferenceFeedback: (payload: PreferenceFeedbackPayload) => Promise<void>;
 }) {
   return (
     <PreferenceProfileWorkbench
@@ -2121,20 +2356,22 @@ function MemoryWorkbench({
       currentUser={currentUser}
       conversations={conversations}
       profile={profile}
+      feedbackLoading={feedbackLoading}
       onOpenHistory={onOpenHistory}
       onOpenUserCenter={onOpenUserCenter}
+      onPreferenceFeedback={onPreferenceFeedback}
     />
   );
 }
 
-function buildWelcomeMessages(user: LocalUser | null, recommendationHint: string | null): Message[] {
+function buildLegacyWelcomeMessages(user: LocalUser | null, recommendationHint: string | null): Message[] {
   if (!user) {
-    return [
-      {
-        role: "assistant",
-        content: "当前为游客模式。你可以直接开始旅行规划，但历史记录、偏好画像和分享页不会保存。",
-      },
-    ];
+      return [
+        {
+          role: "assistant",
+          content: "当前为游客会话，历史、画像与分享不会保存。",
+        },
+      ];
   }
 
   if (recommendationHint) {
@@ -2152,6 +2389,25 @@ function buildWelcomeMessages(user: LocalUser | null, recommendationHint: string
       content: `${user.display_name || "当前用户"} 的新对话已打开。告诉我出发地、目的地、时间、预算或旅行偏好，即可开始规划。`,
     },
   ];
+}
+
+function buildWelcomeMessages(
+  user: LocalUser | null,
+  recommendationHint: string | null,
+  profile: PreferenceProfile | null,
+): Message[] {
+  // 保留旧欢迎语生成器以兼容历史编码文本，同时统一由新画像欢迎语出口接管。
+  void buildLegacyWelcomeMessages;
+  return [
+    {
+      role: "assistant",
+      content: buildWelcomeMessageContent(user, recommendationHint, profile),
+    },
+  ];
+}
+
+function shouldRefreshWelcomeMessages(messages: Message[]) {
+  return messages.length <= 1 && !messages.some((item) => item.role === "user");
 }
 
 function buildGuestCarryoverDraft(
@@ -2320,7 +2576,14 @@ function buildAppTrainPrompt(train: RailwayTrain) {
 
 // 铁路决策台会复用这些判定函数，保持筛选、对比和候选池口径一致。
 function getAppTrainKey(train: RailwayTrain, index = 0) {
-  return `${train.train_no || "train"}-${train.start_time || "start"}-${train.arrive_time || "arrive"}-${index}`;
+  const core = [
+    train.train_no || "train",
+    train.from_station || "from",
+    train.to_station || "to",
+    train.start_time || "start",
+    train.arrive_time || "arrive",
+  ].join("-");
+  return core || `train-${index}`;
 }
 
 function isAppHighSpeedTrain(train: RailwayTrain) {
@@ -2345,6 +2608,15 @@ function getAppTrainTags(train: RailwayTrain, earliestTrain?: RailwayTrain, fast
   return tags.length ? tags : ["常规候选"];
 }
 
+function resolveAppPreferredTrain(trains: RailwayTrain[]) {
+  if (!trains.length) return null;
+  return [...trains].sort((left, right) => {
+    const leftScore = (appHasAvailableSeat(left) ? 4 : 0) + (isAppHighSpeedTrain(left) ? 2 : 0) - toAppDuration(left.duration) / 60 - toAppMinutes(left.start_time) / 600;
+    const rightScore = (appHasAvailableSeat(right) ? 4 : 0) + (isAppHighSpeedTrain(right) ? 2 : 0) - toAppDuration(right.duration) / 60 - toAppMinutes(right.start_time) / 600;
+    return rightScore - leftScore;
+  })[0];
+}
+
 function buildAppComparePrompt(trains: RailwayTrain[]) {
   return [
     "请基于以下多条铁路候选车次，给出明确比选建议，并指出推荐理由、适合人群和可能风险。",
@@ -2362,6 +2634,16 @@ function buildAppCandidatePoolPrompt(trains: RailwayTrain[]) {
       `${index + 1}. ${train.train_no || "车次"}：${train.from_station || "出发站"} 到 ${train.to_station || "到达站"}，${train.start_time || "--:--"} 出发，${train.arrive_time || "--:--"} 到达，耗时 ${train.duration || "待确认"}，座席 ${appSeatSummary(train)}。`,
     ),
     "请输出一个主推荐方案，并保留 1 到 2 个备选交通分支，说明何时应切换备选方案。",
+  ].join("\n");
+}
+
+function buildAppBatchAdoptionPrompt(trains: RailwayTrain[]) {
+  return [
+    "请把以下已选车次作为当前旅行方案的批量交通决策池，直接纳入同一轮规划。",
+    ...trains.map((train, index) =>
+      `${index + 1}. ${train.train_no || "车次"}：${train.from_station || "出发站"} 到 ${train.to_station || "到达站"}，${train.start_time || "--:--"} 出发，${train.arrive_time || "--:--"} 到达，耗时 ${train.duration || "待确认"}，座席 ${appSeatSummary(train)}。`,
+    ),
+    "请输出主推荐车次、备选切换条件、到站后的交通衔接、预算影响与当天行程顺序建议。",
   ].join("\n");
 }
 

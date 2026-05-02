@@ -9,6 +9,7 @@ import {
   Layers3,
   LogIn,
   MapPinned,
+  Radar,
   Route,
   ShieldCheck,
   Sparkles,
@@ -16,15 +17,23 @@ import {
   Wallet,
 } from "lucide-react";
 
-import type { ConversationSummary, LocalUser, PreferenceProfile } from "../lib/types";
+import type {
+  ConversationSummary,
+  LocalUser,
+  PreferenceFeedbackPayload,
+  PreferenceProfile,
+} from "../lib/types";
+import { WorkspaceHero } from "./WorkspaceHero";
 
 interface PreferenceProfileWorkbenchProps {
   guestMode: boolean;
   currentUser: LocalUser | null;
   conversations: ConversationSummary[];
   profile: PreferenceProfile | null;
+  feedbackLoading: boolean;
   onOpenHistory: () => void;
   onOpenUserCenter: () => void;
+  onPreferenceFeedback: (payload: PreferenceFeedbackPayload) => Promise<void>;
 }
 
 interface PreferenceProfileSnapshotProps {
@@ -42,6 +51,7 @@ type ClusterConfig = {
   id: string;
   title: string;
   subtitle: string;
+  dimension: PreferenceFeedbackPayload["dimension"];
   values: string[];
   tone: PreferenceTone;
   icon: ReactNode;
@@ -50,28 +60,31 @@ type ClusterConfig = {
 const STRENGTH_META = {
   new: {
     label: "初步学习",
-    description: "画像刚开始形成，系统会继续从真实对话和决策行为中学习。",
+    description: "画像刚开始形成，系统会继续从真实对话、方案调整和工具选择里学习。",
     ratio: 0.34,
   },
   growing: {
     label: "持续收敛",
-    description: "画像已经出现稳定方向，后续会更主动给出贴合你习惯的建议。",
+    description: "已经出现稳定方向，后续推荐会明显更贴近你的路线、节奏和预算习惯。",
     ratio: 0.68,
   },
   strong: {
     label: "稳定画像",
-    description: "系统已经掌握较稳定的旅行口味，可作为长期个性化基础。",
+    description: "系统已经掌握较稳定的长期偏好，可作为下一次自动规划的个性化基础。",
     ratio: 1,
   },
 } as const;
 
 const SOURCE_LABELS: Record<string, string> = {
-  user_message: "显式表达",
-  trip_slots: "结构化槽位",
-  decision_module: "决策采纳",
-  edited_plan: "行程编辑",
-  railway_workspace: "铁路行为",
-  user_profile: "用户资料",
+  user_message: "对话直述",
+  profile_setting: "资料设定",
+  manual_prefer: "人工确认",
+  manual_avoid: "人工避让",
+  trip_signal: "结构化行程",
+  decision_accept: "模块采纳",
+  decision_ignore: "模块忽略",
+  itinerary_edit: "行程编辑",
+  railway_selection: "铁路选择",
   legacy_profile: "历史画像",
 };
 
@@ -79,9 +92,12 @@ const DIMENSION_LABELS: Record<string, string> = {
   destination: "目的地",
   transport: "交通方式",
   pace: "旅行节奏",
-  interest: "兴趣偏好",
-  budget: "预算区间",
+  interest: "兴趣主题",
+  avoidance: "避让偏好",
+  budget: "预算",
   budget_style: "预算风格",
+  behavior: "行为信号",
+  risk: "风险偏好",
 };
 
 export function PreferenceProfileWorkbench({
@@ -89,261 +105,283 @@ export function PreferenceProfileWorkbench({
   currentUser,
   conversations,
   profile,
+  feedbackLoading,
   onOpenHistory,
   onOpenUserCenter,
+  onPreferenceFeedback,
 }: PreferenceProfileWorkbenchProps) {
   const strength = resolveStrengthMeta(profile);
   const favoriteCount = conversations.filter((item) => item.is_favorite).length;
   const cityCount = new Set(conversations.map((item) => item.destination_city).filter(Boolean)).size;
-  const latestUpdatedAt = profile?.updated_at ? formatDateTime(profile.updated_at) : "尚未形成";
   const archivePreview = conversations.slice(0, 5);
+  const latestUpdatedAt = profile?.updated_at ? formatDateTime(profile.updated_at) : "尚未形成";
   const clusters = buildClusters(profile);
+  const highlights = collectHighlights(profile, 12);
 
   return (
     <div className="view-frame memory-page">
-      <section className="page-band memory-hero-band preference-hero-band">
-        <div>
-          <div className="section-kicker">
-            <ShieldCheck size={16} />
-            偏好画像中心
-          </div>
-          <h2>
-            {guestMode
-              ? "游客模式不会沉淀长期记忆"
-              : `${currentUser?.display_name || currentUser?.username || "当前用户"} 的旅行偏好情报台`}
-          </h2>
-          <p>
-            {guestMode
-              ? "登录后系统才会把真实对话、行程修改、铁路选择和模块采纳行为沉淀为长期偏好画像。"
-              : profile?.recommendation_hint || "系统会依据你的真实规划行为逐步建立更稳定、更可解释的个性化画像。"}
-          </p>
-          <div className="overview-action-row">
+      <WorkspaceHero
+        tone="memory"
+        icon={<ShieldCheck size={16} />}
+        kicker="旅行偏好画像中心"
+        title={guestMode ? "游客会话不沉淀长期记忆" : `${resolveUserName(currentUser)} 的偏好画像中心`}
+        description={guestMode ? "当前仍可完整规划，但系统不会保存历史与长期偏好。" : profile?.recommendation_hint || "系统会把真实选择沉淀成可持续学习的长期偏好。"}
+        badges={highlights.length ? highlights.slice(0, 6) : ["等待更多交互", guestMode ? "游客会话" : "长期记忆在线"]}
+        actions={(
+          <>
             <button type="button" className="primary-action" onClick={onOpenUserCenter}>
               {guestMode ? <LogIn size={15} /> : <ShieldCheck size={15} />}
-              {guestMode ? "登录并保存" : "打开用户中心"}
+              {guestMode ? "登录并开启长期记忆" : "打开用户中心"}
             </button>
             <button type="button" className="secondary-action" onClick={onOpenHistory}>
               <Layers3 size={15} />
-              打开历史中心
+              打开历史规划中心
             </button>
+          </>
+        )}
+        signals={(
+          <div className="preference-studio-metrics">
+            <MetricCard
+              label="画像强度"
+              value={strength.label}
+              detail={guestMode ? "登录后开始沉淀" : strength.description}
+              tone={strength.key === "strong" ? "rust" : strength.key === "growing" ? "rail" : "jade"}
+            />
+            <MetricCard
+              label="最近学习"
+              value={latestUpdatedAt}
+              detail={`${profile?.recent_evidence.length || 0} 条近端证据`}
+              tone="rail"
+            />
+            <MetricCard
+              label="历史资产"
+              value={guestMode ? "未保存" : `${conversations.length} 个会话`}
+              detail={`${favoriteCount} 个收藏，覆盖 ${cityCount} 座城市`}
+              tone="sun"
+            />
           </div>
-        </div>
-
-        <div className="preference-hero-metrics">
-          <article className="preference-metric-card">
-            <span>画像强度</span>
-            <strong>{strength.label}</strong>
-            <em>{guestMode ? "游客不保存" : strength.description}</em>
-          </article>
-          <article className="preference-metric-card">
-            <span>最近学习</span>
-            <strong>{latestUpdatedAt}</strong>
-            <em>{profile?.recent_evidence.length || 0} 条新证据</em>
-          </article>
-          <article className="preference-metric-card">
-            <span>历史资产</span>
-            <strong>{guestMode ? "未保存" : `${conversations.length} 个会话`}</strong>
-            <em>{favoriteCount} 个收藏，覆盖 {cityCount} 座城市</em>
-          </article>
-        </div>
-      </section>
+        )}
+        visualEyebrow="偏好镜像"
+        visualTitle={strength.label}
+        visualDetail={guestMode ? "登录后会持续记录目的地、预算、交通与节奏偏好。" : `${profile?.recent_evidence.length || 0} 条近端证据正在持续校正画像。`}
+        visualMetrics={[
+          { label: "收藏", value: String(favoriteCount) },
+          { label: "覆盖城市", value: String(cityCount) },
+          { label: "节奏偏好", value: profile?.pace_tags?.[0] || "待学习" },
+          { label: "兴趣主题", value: profile?.interest_tags?.[0] || "待学习" },
+        ]}
+      />
 
       {guestMode ? (
-        <section className="page-band preference-guest-lock">
+        <section className="page-band preference-guest-banner">
           <div className="band-head">
             <div className="section-kicker">
               <Sparkles size={15} />
               记忆权限
             </div>
-            <span>游客会话只保留在当前浏览器，不生成长期画像。</span>
+              <span>游客会话只保留在当前浏览器。</span>
           </div>
-          <div className="preference-guest-lock-grid">
-            <article className="preference-guest-lock-card">
-              <strong>可体验</strong>
-              <p>即时提问、生成行程、查看车次、使用联网增强与地图天气工具。</p>
+          <div className="preference-guest-banner-grid">
+            <article className="preference-guest-banner-card">
+              <strong>现在可用</strong>
+              <p>对话规划、列车查询、地图天气联动、攻略检索、联网增强搜索。</p>
             </article>
-            <article className="preference-guest-lock-card">
-              <strong>不会保存</strong>
-              <p>历史会话、版本回溯、用户偏好画像、长期预算模型与行为证据。</p>
+            <article className="preference-guest-banner-card">
+              <strong>本次不保存</strong>
+              <p>历史会话、方案版本、偏好画像、预算区间和行为学习证据。</p>
             </article>
-            <article className="preference-guest-lock-card emphasis">
+            <article className="preference-guest-banner-card emphasis">
               <strong>登录后解锁</strong>
-              <p>系统会自动学习你的城市倾向、预算区间、节奏偏好、交通习惯与负向偏好。</p>
+              <p>自动记住常去城市、交通偏好、旅行节奏、兴趣主题和明确避让项。</p>
             </article>
           </div>
         </section>
       ) : null}
 
-      <div className="preference-workbench-grid">
-        <div className="preference-column">
-          <section className="page-band">
+      <div className="preference-studio-grid">
+        <div className="preference-studio-column main">
+          <section className="page-band preference-panel">
             <div className="band-head">
               <div className="section-kicker">
                 <Compass size={15} />
                 核心偏好簇
               </div>
-              <span>把城市、交通、节奏与兴趣拆成可读的长期偏好结构。</span>
+                <span>画像字段可直接确认或纠偏。</span>
             </div>
-            <div className="preference-cluster-grid">
+
+            <div className="preference-cluster-grid premium">
               {clusters.map((cluster) => (
-                <PreferenceClusterCard key={cluster.id} cluster={cluster} />
+                <PreferenceClusterCard
+                  key={cluster.id}
+                  cluster={cluster}
+                  disabled={guestMode || feedbackLoading}
+                  onPreferenceFeedback={onPreferenceFeedback}
+                />
               ))}
             </div>
           </section>
 
-          <section className="page-band preference-intelligence-band">
+          <section className="page-band preference-panel">
             <div className="band-head">
               <div className="section-kicker">
                 <BrainCircuit size={15} />
+                纠偏控制台
+              </div>
+              <span>
+                {feedbackLoading
+                  ? "正在回写新的偏好权重，稍等片刻。"
+                  : "点击“长期偏好”或“标记避让”后会立即更新画像。"}
+              </span>
+            </div>
+
+            <div className="preference-correction-grid">
+              <PreferenceActionField
+                title="明确避让"
+                subtitle="这些内容会在后续规划里优先回避。"
+                icon={<Route size={16} />}
+                emptyText="还没有形成明确的避让项。"
+                items={profile?.negative_preferences || []}
+                tone="rust"
+                disabled={guestMode || feedbackLoading}
+                onPromote={(value) => onPreferenceFeedback({ dimension: "avoidance", value: stripAvoidPrefix(value), polarity: "negative" })}
+                onInvert={(value) => onPreferenceFeedback({ dimension: "avoidance", value: stripAvoidPrefix(value), polarity: "positive" })}
+                promoteLabel="保持避让"
+                invertLabel="改成接受"
+              />
+
+              <PreferenceActionField
+                title="最近证据"
+                subtitle="最近几次真实交互是怎么影响画像的，一眼就能看见。"
+                icon={<DatabaseZap size={16} />}
+                emptyText="继续对话、编辑行程或采纳模块建议后，这里会自动出现。"
+                items={(profile?.recent_evidence || []).map((item, index) => ({
+                  key: `${item.dimension}-${item.value}-${item.created_at}-${index}`,
+                  title: renderEvidenceHeadline(item.dimension, item.value, item.polarity),
+                  meta: `${resolveSourceLabel(item.source_type)} · ${formatDateTime(item.created_at)}`,
+                  dimension: item.dimension,
+                  value: item.value,
+                  polarity: item.polarity,
+                }))}
+                tone="rail"
+                disabled={guestMode || feedbackLoading}
+                promoteLabel="设为长期偏好"
+                invertLabel="标记为避让"
+                onPromote={(item) =>
+                  onPreferenceFeedback({
+                    dimension: item.dimension,
+                    value: item.value,
+                    polarity: "positive",
+                  })
+                }
+                onInvert={(item) =>
+                  onPreferenceFeedback({
+                    dimension: item.dimension,
+                    value: item.value,
+                    polarity: "negative",
+                  })
+                }
+              />
+            </div>
+          </section>
+
+          <section className="page-band preference-panel">
+            <div className="band-head">
+              <div className="section-kicker">
+                <Radar size={15} />
                 学习来源
               </div>
-              <span>把系统“为什么这样判断”清楚地摊开。</span>
+              <span>告诉你系统为何会形成当前判断，减少黑盒感。</span>
             </div>
+
             <div className="preference-signal-board">
               <PreferenceSignalColumn
                 title="显式表达"
-                subtitle="用户在对话里直接说出的偏好"
+                subtitle="你在对话里直接说出来的偏好。"
                 values={profile?.explicit_preferences || []}
                 tone="jade"
               />
               <PreferenceSignalColumn
                 title="推断偏好"
-                subtitle="从历史规划与上下文稳定归纳出的倾向"
+                subtitle="从历史规划和上下文持续归纳出的倾向。"
                 values={profile?.inferred_preferences || []}
                 tone="rail"
               />
               <PreferenceSignalColumn
                 title="行为信号"
-                subtitle="来自编辑、采纳与铁路选择的真实动作"
+                subtitle="来自行程编辑、模块采纳与列车选择的真实动作。"
                 values={profile?.behavior_signals || []}
                 tone="sun"
               />
             </div>
-            <div className="preference-negative-board">
-              <div className="band-head compact">
-                <div className="section-kicker">
-                  <Route size={15} />
-                  负向偏好
-                </div>
-                <span>这些内容会被系统优先避让。</span>
-              </div>
-              <div className="preference-negative-list">
-                {(profile?.negative_preferences || []).length ? (
-                  profile?.negative_preferences.map((item) => (
-                    <div key={item} className="preference-negative-item">
-                      <span>避免</span>
-                      <strong>{item}</strong>
-                    </div>
-                  ))
-                ) : (
-                  <div className="preference-empty-state">当前还没有形成明确的避让偏好。</div>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <section className="page-band preference-evidence-band">
-            <div className="band-head">
-              <div className="section-kicker">
-                <DatabaseZap size={15} />
-                最近证据
-              </div>
-              <span>最近几次真实交互是如何推动画像收敛的。</span>
-            </div>
-            <div className="preference-evidence-list">
-              {profile?.recent_evidence?.length ? (
-                profile.recent_evidence.map((item, index) => (
-                  <article
-                    key={`${item.dimension}-${item.value}-${item.created_at}-${index}`}
-                    className={`preference-evidence-item ${item.polarity === "negative" ? "negative" : ""}`}
-                  >
-                    <div className="preference-evidence-top">
-                      <strong>{renderEvidenceHeadline(item.dimension, item.value, item.polarity)}</strong>
-                      <span>{formatDateTime(item.created_at)}</span>
-                    </div>
-                    <p>{resolveDimensionLabel(item.dimension)} · {resolveSourceLabel(item.source_type)}</p>
-                    <div className="preference-evidence-meta">
-                      <em>置信 {Math.round(item.confidence * 100)}%</em>
-                      <em>权重 {item.weight.toFixed(2)}</em>
-                    </div>
-                  </article>
-                ))
-              ) : (
-                <div className="preference-empty-state">
-                  还没有可展示的近期证据，继续对话、编辑行程或采纳决策模块后会自动出现。
-                </div>
-              )}
-            </div>
           </section>
         </div>
 
-        <div className="preference-column">
-          <section className="page-band preference-strength-panel">
+        <div className="preference-studio-column side">
+          <section className="page-band preference-panel preference-strength-panel">
             <div className="band-head">
               <div className="section-kicker">
                 <Activity size={15} />
                 画像状态
               </div>
-              <span>当前画像成熟度与长期个性化准备度。</span>
+              <span>当前画像的成熟度，以及它对后续规划的影响范围。</span>
             </div>
-            <div className="preference-strength-badge-row">
+
+            <div className="preference-strength-hero">
               <strong>{strength.label}</strong>
-              <span>{guestMode ? "登录后开始累计" : strength.description}</span>
+              <p>{guestMode ? "登录后系统才会开始沉淀并积累可复用偏好。" : strength.description}</p>
             </div>
+
             <div className="preference-strength-track">
               <div className="preference-strength-progress" style={{ width: `${strength.ratio * 100}%` }} />
               {(["new", "growing", "strong"] as const).map((item) => (
-                <div key={item} className={`preference-strength-step ${strengthKey(profile) === item ? "active" : ""}`}>
+                <div key={item} className={`preference-strength-step ${strength.key === item ? "active" : ""}`}>
                   <span />
                   <strong>{STRENGTH_META[item].label}</strong>
                 </div>
               ))}
             </div>
-            <div className="preference-strength-foot">
-              系统会把“说过什么”和“实际怎么选”同时纳入画像，这让个性化建议不再只靠一句自述。
+
+            <div className="preference-strength-note">
+              系统会同时吸收“你说了什么”和“你最后怎么选”，这比只靠一轮聊天更适合做长期个性化推荐。
             </div>
           </section>
 
-          <section className="page-band preference-budget-panel">
+          <section className="page-band preference-panel preference-budget-panel">
             <div className="band-head">
               <div className="section-kicker">
                 <Wallet size={15} />
                 预算模型
               </div>
-              <span>预算不是一行标签，而是可持续更新的区间判断。</span>
+              <span>预算不是一条死标签，而是会随着新行程持续更新的区间判断。</span>
             </div>
+
             <div className="preference-budget-grid">
-              <div className="preference-budget-stat">
-                <span>常用预算</span>
-                <strong>{profile?.budget_range || "待学习"}</strong>
-              </div>
-              <div className="preference-budget-stat">
-                <span>中位预算</span>
-                <strong>{profile?.budget_profile?.median ? `¥${profile.budget_profile.median}` : "待学习"}</strong>
-              </div>
-              <div className="preference-budget-stat">
-                <span>波动区间</span>
-                <strong>
-                  {profile?.budget_profile?.lower_bound && profile?.budget_profile?.upper_bound
-                    ? `¥${profile.budget_profile.lower_bound} - ¥${profile.budget_profile.upper_bound}`
-                    : "待学习"}
-                </strong>
-              </div>
-              <div className="preference-budget-stat">
-                <span>敏感度</span>
-                <strong>{profile?.budget_profile?.sensitivity || "待学习"}</strong>
-              </div>
+              <BudgetStat label="常用预算" value={profile?.budget_range || "待学习"} />
+              <BudgetStat
+                label="中位预算"
+                value={profile?.budget_profile?.median ? `${profile.budget_profile.median} 元` : "待学习"}
+              />
+              <BudgetStat
+                label="波动区间"
+                value={
+                  profile?.budget_profile?.lower_bound && profile?.budget_profile?.upper_bound
+                    ? `${profile.budget_profile.lower_bound} - ${profile.budget_profile.upper_bound} 元`
+                    : "待学习"
+                }
+              />
+              <BudgetStat label="敏感度" value={profile?.budget_profile?.sensitivity || "待学习"} />
             </div>
           </section>
 
-          <section className="page-band preference-archive-panel">
+          <section className="page-band preference-panel">
             <div className="band-head">
               <div className="section-kicker">
                 <CalendarClock size={15} />
                 最近档案
               </div>
-              <span>这些历史会话会继续反哺偏好学习与下次规划。</span>
+              <span>这些历史会持续反哺后续推荐和画像收敛。</span>
             </div>
+
             <div className="preference-archive-list">
               {archivePreview.length ? (
                 archivePreview.map((conversation) => (
@@ -356,7 +394,7 @@ export function PreferenceProfileWorkbench({
                   </article>
                 ))
               ) : (
-                <div className="preference-empty-state">当前还没有可回溯的历史会话。</div>
+                <div className="preference-empty-state">当前还没有可回溯的历史规划。</div>
               )}
             </div>
           </section>
@@ -364,8 +402,8 @@ export function PreferenceProfileWorkbench({
           <PreferenceProfileSnapshot
             profile={profile}
             title="画像摘要"
-            subtitle="给用户中心、历史中心和后续多端复用的轻量摘要视图。"
-            emptyText="暂未形成稳定画像，继续规划几次后会自动出现。"
+            subtitle="给用户中心、历史中心和其他工作页复用的轻量概览。"
+            emptyText="继续规划几次之后，这里会形成更稳定的长期偏好摘要。"
             showEvidence
           />
         </div>
@@ -392,7 +430,7 @@ export function PreferenceProfileSnapshot({
           <Sparkles size={15} />
           {title}
         </div>
-        <span>{subtitle || "把系统当前理解到的偏好收束成一个简明可读的摘要。"}</span>
+        <span>{subtitle || "把系统当前理解到的旅行偏好收束成一段简明摘要。"} </span>
       </div>
 
       <div className="profile-snapshot-header">
@@ -419,17 +457,13 @@ export function PreferenceProfileSnapshot({
       </div>
 
       <div className="profile-snapshot-tags">
-        {highlights.length ? (
-          highlights.map((item) => <span key={item}>{item}</span>)
-        ) : (
-          <span className="is-empty">等待更多交互</span>
-        )}
+        {highlights.length ? highlights.map((item) => <span key={item}>{item}</span>) : <span className="is-empty">等待更多交互</span>}
       </div>
 
       {profile?.negative_preferences.length ? (
         <div className="profile-snapshot-negative">
           {profile.negative_preferences.slice(0, compact ? 2 : 4).map((item) => (
-            <em key={item}>避免 {item}</em>
+            <em key={item}>避免 {stripAvoidPrefix(item)}</em>
           ))}
         </div>
       ) : null}
@@ -439,7 +473,9 @@ export function PreferenceProfileSnapshot({
           {profile.recent_evidence.slice(0, compact ? 2 : 3).map((item, index) => (
             <div key={`${item.dimension}-${item.value}-${index}`} className="profile-snapshot-evidence-item">
               <strong>{renderEvidenceHeadline(item.dimension, item.value, item.polarity)}</strong>
-              <span>{resolveSourceLabel(item.source_type)} · {formatDateTime(item.created_at)}</span>
+              <span>
+                {resolveSourceLabel(item.source_type)} · {formatDateTime(item.created_at)}
+              </span>
             </div>
           ))}
         </div>
@@ -448,7 +484,44 @@ export function PreferenceProfileSnapshot({
   );
 }
 
-function PreferenceClusterCard({ cluster }: { cluster: ClusterConfig }) {
+function MetricCard({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone: PreferenceTone;
+}) {
+  return (
+    <article className={`preference-pulse-card tone-${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <em>{detail}</em>
+    </article>
+  );
+}
+
+function BudgetStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="preference-budget-stat">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function PreferenceClusterCard({
+  cluster,
+  disabled,
+  onPreferenceFeedback,
+}: {
+  cluster: ClusterConfig;
+  disabled: boolean;
+  onPreferenceFeedback: (payload: PreferenceFeedbackPayload) => Promise<void>;
+}) {
   return (
     <article className={`preference-cluster-card tone-${cluster.tone}`}>
       <div className="preference-cluster-head">
@@ -458,12 +531,45 @@ function PreferenceClusterCard({ cluster }: { cluster: ClusterConfig }) {
           <span>{cluster.subtitle}</span>
         </div>
       </div>
-      <div className="preference-pill-row">
+
+      <div className="preference-chip-cloud">
         {cluster.values.length ? (
           cluster.values.map((item) => (
-            <span key={item} className="preference-pill">
-              {item}
-            </span>
+            <div key={item} className="preference-chip">
+              <div className="preference-chip-main">
+                <span>{item}</span>
+              </div>
+              <div className="preference-chip-actions">
+                <button
+                  type="button"
+                  className="preference-chip-btn"
+                  disabled={disabled}
+                  onClick={() =>
+                    void onPreferenceFeedback({
+                      dimension: cluster.dimension,
+                      value: item,
+                      polarity: "positive",
+                    })
+                  }
+                >
+                  长期偏好
+                </button>
+                <button
+                  type="button"
+                  className="preference-chip-btn negative"
+                  disabled={disabled}
+                  onClick={() =>
+                    void onPreferenceFeedback({
+                      dimension: cluster.dimension,
+                      value: item,
+                      polarity: "negative",
+                    })
+                  }
+                >
+                  标记避让
+                </button>
+              </div>
+            </div>
           ))
         ) : (
           <div className="preference-empty-state">还在持续学习中</div>
@@ -505,13 +611,89 @@ function PreferenceSignalColumn({
   );
 }
 
+function PreferenceActionField<T extends string | EvidenceActionItem>({
+  title,
+  subtitle,
+  icon,
+  emptyText,
+  items,
+  tone,
+  disabled,
+  promoteLabel,
+  invertLabel,
+  onPromote,
+  onInvert,
+}: {
+  title: string;
+  subtitle: string;
+  icon: ReactNode;
+  emptyText: string;
+  items: T[];
+  tone: PreferenceTone;
+  disabled: boolean;
+  promoteLabel: string;
+  invertLabel: string;
+  onPromote: (item: T) => void;
+  onInvert: (item: T) => void;
+}) {
+  return (
+    <article className={`preference-action-field tone-${tone}`}>
+      <div className="preference-action-head">
+        <div className="preference-action-icon">{icon}</div>
+        <div>
+          <strong>{title}</strong>
+          <span>{subtitle}</span>
+        </div>
+      </div>
+
+      <div className="preference-action-list">
+        {items.length ? (
+          items.map((item) => {
+            const key = typeof item === "string" ? item : item.key;
+            const titleText = typeof item === "string" ? item : item.title;
+            const metaText = typeof item === "string" ? null : item.meta;
+            return (
+              <div key={key} className="preference-action-item">
+                <div className="preference-action-copy">
+                  <strong>{titleText}</strong>
+                  {metaText ? <span>{metaText}</span> : null}
+                </div>
+                <div className="preference-action-buttons">
+                  <button type="button" disabled={disabled} onClick={() => onPromote(item)}>
+                    {promoteLabel}
+                  </button>
+                  <button type="button" className="negative" disabled={disabled} onClick={() => onInvert(item)}>
+                    {invertLabel}
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div className="preference-empty-state">{emptyText}</div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+type EvidenceActionItem = {
+  key: string;
+  title: string;
+  meta: string;
+  dimension: string;
+  value: string;
+  polarity: string;
+};
+
 function buildClusters(profile: PreferenceProfile | null): ClusterConfig[] {
-  // 把分散的偏好字段组织成稳定的产品信息架构，便于前端多端复用。
+  // 把零散字段整理成稳定的信息架构，方便前端多工作页复用。
   return [
     {
       id: "cities",
       title: "目的地偏好",
-      subtitle: "更常被你反复选择或回访的城市",
+      subtitle: "你反复选择或更容易被打动的城市。",
+      dimension: "destination",
       values: profile?.preferred_cities || [],
       tone: "jade",
       icon: <MapPinned size={16} />,
@@ -519,7 +701,8 @@ function buildClusters(profile: PreferenceProfile | null): ClusterConfig[] {
     {
       id: "transport",
       title: "交通方式",
-      subtitle: "出行方式与换乘习惯",
+      subtitle: "你更偏爱的出行方式与换乘习惯。",
+      dimension: "transport",
       values: profile?.transport_modes || [],
       tone: "rail",
       icon: <TrainFront size={16} />,
@@ -527,7 +710,8 @@ function buildClusters(profile: PreferenceProfile | null): ClusterConfig[] {
     {
       id: "pace",
       title: "旅行节奏",
-      subtitle: "偏轻松、紧凑或错峰的行程节奏",
+      subtitle: "你能接受怎样的密度、强度与时间安排。",
+      dimension: "pace",
       values: profile?.pace_tags || [],
       tone: "sun",
       icon: <Activity size={16} />,
@@ -535,7 +719,8 @@ function buildClusters(profile: PreferenceProfile | null): ClusterConfig[] {
     {
       id: "interest",
       title: "兴趣主题",
-      subtitle: "你更愿意为哪些体验留出时间",
+      subtitle: "你更愿意为哪些体验留出预算和时间。",
+      dimension: "interest",
       values: profile?.interest_tags || [],
       tone: "rust",
       icon: <HeartHandshake size={16} />,
@@ -544,7 +729,7 @@ function buildClusters(profile: PreferenceProfile | null): ClusterConfig[] {
 }
 
 function collectHighlights(profile: PreferenceProfile | null, limit: number): string[] {
-  // 摘要视图只保留最有辨识度的一组偏好，避免信息噪音。
+  // 只保留最有辨识度的一组特征，避免摘要面板变成信息墙。
   if (!profile) return [];
   const merged = [
     ...profile.preferred_cities,
@@ -559,18 +744,17 @@ function collectHighlights(profile: PreferenceProfile | null, limit: number): st
 
 function resolveStrengthMeta(profile: PreferenceProfile | null) {
   const key = strengthKey(profile);
-  return {
-    key,
-    ...STRENGTH_META[key],
-  };
+  return { key, ...STRENGTH_META[key] };
 }
 
 function strengthKey(profile: PreferenceProfile | null): keyof typeof STRENGTH_META {
   const key = profile?.profile_strength;
-  if (key === "strong" || key === "growing" || key === "new") {
-    return key;
-  }
+  if (key === "strong" || key === "growing" || key === "new") return key;
   return "new";
+}
+
+function resolveUserName(user: LocalUser | null) {
+  return user?.display_name || user?.username || "当前用户";
 }
 
 function resolveSourceLabel(sourceType: string) {
@@ -583,13 +767,17 @@ function resolveDimensionLabel(dimension: string) {
 
 function renderEvidenceHeadline(dimension: string, value: string, polarity: string) {
   if (polarity === "negative") {
-    return `避免 ${value}`;
+    return `避免 ${stripAvoidPrefix(value)}`;
   }
-  return `${resolveDimensionLabel(dimension)}：${value}`;
+  return `${resolveDimensionLabel(dimension)} · ${value}`;
+}
+
+function stripAvoidPrefix(value: string) {
+  return value.replace(/^避免/, "").trim();
 }
 
 function formatDateTime(value: string) {
-  // 统一把时间压缩成适合工作台阅读的短格式。
+  // 统一压缩成适合工作台阅读的短时间格式。
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", {

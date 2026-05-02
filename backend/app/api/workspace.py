@@ -8,6 +8,7 @@ from app.schemas.workspace import (
     AuthRefreshRequest,
     ConversationUpdateRequest,
     GuestSessionImportRequest,
+    PreferenceFeedbackRequest,
     UserCreateRequest,
     UserLoginRequest,
     UserProfileUpdateRequest,
@@ -301,3 +302,25 @@ def get_preference_profile(
         return ok(_guest_profile_payload())
     profile = PreferenceService(db, user_key=str(auth.user.id)).get_profile()
     return ok(profile.model_dump())
+
+
+@router.post("/preference-profile/feedback")
+def submit_preference_feedback(
+    payload: PreferenceFeedbackRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """接收用户对画像判断的人工校正，并立即回写最新画像。"""
+    auth = _resolve_auth_context(db, authorization)
+    if auth is None:
+        return fail(5019, "游客模式下无法保存偏好画像纠正", {"error": "guest_has_no_profile_feedback"})
+    try:
+        profile = PreferenceService(db, user_key=str(auth.user.id)).apply_manual_feedback(
+            dimension=payload.dimension,
+            value=payload.value,
+            polarity=payload.polarity,
+            conversation_id=payload.conversation_id,
+        )
+        return ok(profile.model_dump())
+    except Exception as exc:  # noqa: BLE001
+        return fail(5020, "偏好画像纠正失败", {"error": str(exc)})

@@ -71,7 +71,7 @@ export function InsightPanel({ latest, guideSources }: InsightPanelProps) {
       <div className="rail-visual-card insight-visual">
         <span>中国高铁旅行视角</span>
         <strong>{destination?.title || "目的地待确认"}</strong>
-        <em>{trains.length ? `${trains.length} 条铁路候选已进入主工作台` : "等待智能体调度铁路结果"}</em>
+        <em>{trains.length ? `${trains.length} 条铁路候选已就绪` : "等待铁路结果"}</em>
       </div>
 
       <section className="insight-summary" aria-label="实时洞察摘要">
@@ -109,7 +109,7 @@ export function InsightPanel({ latest, guideSources }: InsightPanelProps) {
           <strong>{railway?.summary || "等待查询"}</strong>
           <span>
             {railway?.meta?.date ? `${railway.meta.date} / ` : ""}
-            完整车次列表已放到中间主工作台，可滚动查看全部结果。
+            完整车次列表已同步到铁路页。
           </span>
         </div>
         <div className="rail-quick-stats">
@@ -166,7 +166,7 @@ export function InsightPanel({ latest, guideSources }: InsightPanelProps) {
               <small>{call.output_summary}</small>
             </div>
           ))}
-          {!latest?.tool_calls?.length && <div className="empty-line">等待智能体调度</div>}
+          {!latest?.tool_calls?.length && <div className="empty-line">等待调用结果</div>}
         </div>
       </section>
 

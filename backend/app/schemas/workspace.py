@@ -213,3 +213,12 @@ class PreferenceProfileView(BaseModel):
     recent_evidence: list[PreferenceEvidenceView] = Field(default_factory=list)
     recommendation_hint: str
     updated_at: str | None = None
+
+
+class PreferenceFeedbackRequest(BaseModel):
+    """用户手动纠正偏好画像的请求。"""
+
+    dimension: str = Field(min_length=1, max_length=40)
+    value: str = Field(min_length=1, max_length=120)
+    polarity: str = Field(pattern="^(positive|negative)$")
+    conversation_id: str | None = Field(default=None, max_length=64)

@@ -198,7 +198,7 @@ export function HistoryCenter({
                 <History size={16} />
                 历史规划中心
               </div>
-              <h2>游客模式可即时规划，但不会保存历史和偏好画像</h2>
+              <h2>游客会话不保留历史与偏好画像</h2>
             </div>
             <button className="icon-button" onClick={onClose} aria-label="关闭">
               <X size={18} />
@@ -207,8 +207,8 @@ export function HistoryCenter({
 
           <section className="guest-history-lock">
             <div className="guest-history-lock-kicker">旅行资产保存</div>
-            <strong>登录后自动沉淀历史规划、收藏方案、城市专题和用户偏好画像。</strong>
-            <p>当前游客模式下，你依然可以正常提问、查看工具结果、二次优化行程，但刷新页面后不会保留旅行档案。</p>
+            <strong>登录后自动沉淀历史规划、收藏、城市专题和偏好画像。</strong>
+            <p>当前会话仍可正常规划与优化，但刷新后不会保留旅行档案。</p>
             <div className="guest-history-lock-actions">
               <button type="button" className="primary-action" onClick={onOpenUserCenter}>
                 登录后保存本次规划
@@ -274,7 +274,7 @@ export function HistoryCenter({
               <History size={16} />
               历史规划中心
             </div>
-            <h2>把历史会话整理成可搜索、可收藏、可分组的旅行档案库</h2>
+            <h2>历史会话、收藏方案与城市专题统一沉淀在这里</h2>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="关闭">
             <X size={18} />
@@ -285,7 +285,7 @@ export function HistoryCenter({
           profile={profile}
           compact
           title="用户偏好画像"
-          subtitle="历史筛选和专题聚合会同时参考你的长期偏好。"
+          subtitle="筛选与专题聚合会同步参考长期偏好。"
           emptyText="暂无稳定偏好，完成几次规划后会自动沉淀。"
         />
 
@@ -338,7 +338,7 @@ export function HistoryCenter({
               <button type="button" className="archive-overview-card" onClick={() => setViewMode("favorites")}>
                 <span>收藏夹</span>
                 <strong>{favoriteCount}</strong>
-                <p>{featuredFavorites[0]?.title || "把重点方案加入收藏"}</p>
+                <p>{featuredFavorites[0]?.title || "优先保留重点方案"}</p>
               </button>
               <button type="button" className="archive-overview-card" onClick={() => setViewMode("cities")}>
                 <span>城市专题</span>

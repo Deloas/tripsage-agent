@@ -18,6 +18,7 @@ from app.schemas.chat import ChatRequest
 from app.schemas.workspace import (
     ConversationUpdateRequest,
     GuestSessionImportRequest,
+    PreferenceFeedbackRequest,
     UserCreateRequest,
     UserLoginRequest,
     UserProfileUpdateRequest,
@@ -117,6 +118,44 @@ def test_preference_profile_tracks_negative_and_behavior_signals(db_session) -> 
     assert profile.profile_strength in {"growing", "strong"}
     assert profile.recent_evidence
     assert len(events) >= 4
+
+
+def test_preference_profile_accepts_manual_feedback(db_session) -> None:
+    """用户应能把系统判断纠正为长期偏好或明确避让。"""
+    service = PreferenceService(db_session, user_key="84")
+    service.learn_from_interaction(
+        f"{SHANGHAI}出发，预算1800元，想轻松一点，优先{HIGH_SPEED_RAIL}。",
+        {"answer": f"建议去{NANJING}。", "cards": [{"type": "destination", "title": NANJING}]},
+        conversation_id="conv-manual-1",
+    )
+
+    profile = service.apply_manual_feedback(
+        dimension="interest",
+        value=FOOD,
+        polarity="positive",
+        conversation_id="conv-manual-1",
+    )
+    profile = service.apply_manual_feedback(
+        dimension="transport",
+        value=HIGH_SPEED_RAIL,
+        polarity="negative",
+        conversation_id="conv-manual-1",
+    )
+    profile = service.apply_manual_feedback(
+        dimension="avoidance",
+        value="早班车",
+        polarity="negative",
+        conversation_id="conv-manual-1",
+    )
+
+    events = db_session.query(TravelPreferenceEvent).filter(TravelPreferenceEvent.user_key == "84").all()
+
+    assert FOOD in profile.interest_tags
+    assert HIGH_SPEED_RAIL not in profile.transport_modes
+    assert any(HIGH_SPEED_RAIL in item for item in profile.negative_preferences)
+    assert any("早班车" in item for item in profile.negative_preferences)
+    assert any(item.source_type == "manual_prefer" for item in events)
+    assert any(item.source_type == "manual_avoid" for item in events)
 
 
 def test_conversation_service_lists_and_reads_history(db_session) -> None:
@@ -395,6 +434,43 @@ def test_workspace_can_import_guest_session_into_logged_user(db_session) -> None
     assert summary.start_date == WEEKEND
     assert len(versions) == 1
     assert NANJING in profile.preferred_cities
+
+
+def test_workspace_preference_feedback_route_updates_profile(db_session) -> None:
+    """画像纠正接口应能立即返回更新后的聚合结果。"""
+    auth = _create_logged_user(db_session)
+    authorization = _auth_header(auth.access_token)
+
+    response = workspace_api.submit_preference_feedback(
+        PreferenceFeedbackRequest(
+            dimension="transport",
+            value=HIGH_SPEED_RAIL,
+            polarity="positive",
+            conversation_id="conv-feedback-1",
+        ),
+        authorization=authorization,
+        db=db_session,
+    )
+    body = json.loads(response.body)
+
+    assert body["code"] == 0
+    assert HIGH_SPEED_RAIL in body["data"]["transport_modes"]
+
+
+def test_workspace_preference_feedback_route_blocks_guest_mode(db_session) -> None:
+    """游客模式下不允许沉淀人工画像纠正。"""
+    response = workspace_api.submit_preference_feedback(
+        PreferenceFeedbackRequest(
+            dimension="interest",
+            value=FOOD,
+            polarity="positive",
+        ),
+        authorization=None,
+        db=db_session,
+    )
+    body = json.loads(response.body)
+
+    assert body["code"] == 5019
 
 
 def test_auth_service_can_refresh_revoke_and_list_sessions(db_session) -> None:

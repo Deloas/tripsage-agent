@@ -3,7 +3,6 @@ import {
   BadgeDollarSign,
   CheckCircle2,
   ChevronDown,
-  ChevronUp,
   CloudRain,
   Clock3,
   DatabaseZap,
@@ -16,7 +15,8 @@ import {
   Link2,
   ListChecks,
   LogIn,
-  MapPinned,
+  PanelLeftOpen,
+  PanelRightOpen,
   PencilLine,
   Plus,
   RefreshCw,
@@ -38,6 +38,7 @@ import type {
   RailwayTrain,
   StreamStage,
 } from "../lib/types";
+import type { PlanningPromptCard } from "../lib/personalization";
 
 interface ChatWorkspaceProps {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
@@ -52,7 +53,13 @@ interface ChatWorkspaceProps {
   versionCompare: PlanVersionCompare | null;
   shareUrl: string | null;
   canShareVersion: boolean;
+  starterPrompts: PlanningPromptCard[];
+  profileHighlights: string[];
+  profileDigest: string;
   decisionModuleStates: Record<string, "accepted" | "ignored">;
+  onOpenPlanner: () => void;
+  onOpenEvidence: () => void;
+  onOpenRailway: () => void;
   onOpenUserCenter: () => void;
   onSubmit: (message: string) => void;
   onOptimizeItinerary: (editedPlan: Record<string, unknown>) => void;
@@ -62,13 +69,13 @@ interface ChatWorkspaceProps {
   onShareVersion: (versionId: string) => void;
 }
 
+type PrimaryWorkbenchTab = "messages" | "itinerary" | "decision";
+type SecondaryWorkbenchTab = "railway" | "versions";
 type RailwaySortMode = "recommended" | "earliest" | "fastest";
 type TrainTypeFilter = "all" | "high_speed" | "normal";
 type SeatFilter = "all" | "available";
-type PrimaryWorkbenchTab = "messages" | "itinerary" | "decision";
-type SecondaryWorkbenchTab = "railway" | "versions";
 
-const modeLabel: Record<ChatWorkspaceProps["searchMode"], string> = {
+const searchModeLabel: Record<ChatWorkspaceProps["searchMode"], string> = {
   auto: "自动检索",
   local_only: "仅攻略库",
   web_enhanced: "联网增强",
@@ -92,7 +99,8 @@ function getDecisionStateLabel(state?: "accepted" | "ignored") {
   return "待处理";
 }
 
-function asTrains(value: unknown): RailwayTrain[] {
+function getRailwayTrains(card: ChatResponse["cards"][number] | null): RailwayTrain[] {
+  const value = card?.meta?.trains;
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is RailwayTrain => typeof item === "object" && item !== null);
 }
@@ -109,7 +117,7 @@ function seatSummary(train: RailwayTrain) {
   const parts = preferred
     .map(([key, label]) => (seats[key] ? `${label}${seats[key]}` : null))
     .filter(Boolean);
-  return parts.slice(0, 3).join(" / ") || "余票请以 12306 为准";
+  return parts.slice(0, 3).join(" / ") || "余票请以 12306 官方结果为准";
 }
 
 function toMinutesFromTime(value?: string) {
@@ -123,9 +131,7 @@ function toDurationMinutes(value?: string) {
   if (!value) return Number.POSITIVE_INFINITY;
   const match = value.match(/(?:(\d+)\s*小时)?(?:(\d+)\s*分)?/);
   if (!match) return Number.POSITIVE_INFINITY;
-  const hours = Number(match[1] || 0);
-  const minutes = Number(match[2] || 0);
-  return hours * 60 + minutes;
+  return Number(match[1] || 0) * 60 + Number(match[2] || 0);
 }
 
 function findEarliestTrain(trains: RailwayTrain[]) {
@@ -134,502 +140,6 @@ function findEarliestTrain(trains: RailwayTrain[]) {
 
 function findFastestTrain(trains: RailwayTrain[]) {
   return [...trains].sort((left, right) => toDurationMinutes(left.duration) - toDurationMinutes(right.duration))[0];
-}
-
-export function ChatWorkspace({
-  messages,
-  latest,
-  loading,
-  guestMode,
-  guestCarryoverReady,
-  searchMode,
-  streamStages,
-  planVersions,
-  activeVersionId,
-  versionCompare,
-  shareUrl,
-  canShareVersion,
-  decisionModuleStates,
-  onOpenUserCenter,
-  onSubmit,
-  onOptimizeItinerary,
-  onDecisionModuleAction,
-  onVersionSelect,
-  onExportVersion,
-  onShareVersion,
-}: ChatWorkspaceProps) {
-  const [value, setValue] = useState("");
-  const [railwayExpanded, setRailwayExpanded] = useState(false);
-  const [railwaySortMode, setRailwaySortMode] = useState<RailwaySortMode>("recommended");
-  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
-  const [primaryTab, setPrimaryTab] = useState<PrimaryWorkbenchTab>("messages");
-  const [secondaryTab, setSecondaryTab] = useState<SecondaryWorkbenchTab>("railway");
-
-  const messageScrollRef = useRef<HTMLDivElement | null>(null);
-  const composerRef = useRef<HTMLFormElement | null>(null);
-  const messageEndRef = useRef<HTMLDivElement | null>(null);
-
-  const cards = latest?.cards || [];
-  const activeVersion = planVersions.find((item) => item.id === activeVersionId) || null;
-  const toolCount = latest?.tool_calls?.length || 0;
-  const sourceCount = latest?.sources?.length || 0;
-  const dayCount = latest?.itinerary?.length || 0;
-  const railwayCard = cards.find((card) => card.type === "railway") || null;
-  const railwayTrains = useMemo(() => asTrains(railwayCard?.meta?.trains), [railwayCard]);
-  const sortedRailwayTrains = useMemo(() => {
-    if (railwaySortMode === "earliest") {
-      return [...railwayTrains].sort((left, right) => toMinutesFromTime(left.start_time) - toMinutesFromTime(right.start_time));
-    }
-    if (railwaySortMode === "fastest") {
-      return [...railwayTrains].sort((left, right) => toDurationMinutes(left.duration) - toDurationMinutes(right.duration));
-    }
-    return railwayTrains;
-  }, [railwaySortMode, railwayTrains]);
-  const earliestTrain = useMemo(() => findEarliestTrain(railwayTrains), [railwayTrains]);
-  const fastestTrain = useMemo(() => findFastestTrain(railwayTrains), [railwayTrains]);
-  const digestCards = cards.filter((card) => card.type !== "railway").slice(0, 4);
-
-  function submitCurrent() {
-    const text = value.trim();
-    if (!text || loading) return;
-    setValue("");
-    onSubmit(text);
-  }
-
-  function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    submitCurrent();
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    // 中文输入保留换行，仅在快捷键触发时发送。
-    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-      event.preventDefault();
-      submitCurrent();
-    }
-  }
-
-  function scrollToLatest() {
-    setPrimaryTab("messages");
-    window.requestAnimationFrame(() => {
-      const element = messageScrollRef.current;
-      if (!element) return;
-      element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
-    });
-  }
-
-  function scrollToTop() {
-    setPrimaryTab("messages");
-    window.requestAnimationFrame(() => {
-      messageScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-    });
-  }
-
-  function scrollToComposer() {
-    composerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    composerRef.current?.querySelector("textarea")?.focus();
-  }
-
-  useEffect(() => {
-    if (primaryTab !== "messages") return;
-    const element = messageScrollRef.current;
-    if (!element) return;
-    element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
-  }, [messages.length, loading, primaryTab]);
-
-  useEffect(() => {
-    const element = messageScrollRef.current;
-    if (!element) return;
-
-    const handleScroll = () => {
-      const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-      setShowJumpToLatest(distanceToBottom > 220);
-    };
-
-    handleScroll();
-    element.addEventListener("scroll", handleScroll);
-    return () => element.removeEventListener("scroll", handleScroll);
-  }, []);
-
-  useEffect(() => {
-    if (!railwayCard && planVersions.length) {
-      setSecondaryTab("versions");
-      return;
-    }
-    if (railwayCard) {
-      setSecondaryTab((current) => (current === "versions" && !planVersions.length ? "railway" : current));
-    }
-  }, [planVersions.length, railwayCard]);
-
-  return (
-    <main className="chat-workspace tripsage-workbench">
-      <section className="workspace-top-strip" aria-label="旅行决策工作台概览">
-        <div className="workspace-top-copy">
-          <div className="section-kicker">
-            <WandSparkles size={16} />
-            智能体工作台
-          </div>
-          <h1>对话、车次与证据</h1>
-        </div>
-
-        <div className="workspace-top-actions">
-          <div className="header-chips">
-            <span className="intent-chip">{latest?.intent || "ready"}</span>
-            <span className="mode-chip">{modeLabel[searchMode]}</span>
-          </div>
-          <div className="workspace-anchor-actions">
-            <button type="button" className="dock-button" onClick={scrollToTop}>
-              <ChevronUp size={14} />
-              对话顶部
-            </button>
-            <button type="button" className="dock-button" onClick={scrollToLatest}>
-              <ChevronDown size={14} />
-              最新消息
-            </button>
-            <button type="button" className="dock-button strong" onClick={scrollToComposer}>
-              <SendHorizonal size={14} />
-              立即提问
-            </button>
-          </div>
-        </div>
-
-        <div className="workspace-metrics-grid">
-          <MetricBlock icon={Layers3} label="方案版本" value={String(planVersions.length)} />
-          <MetricBlock icon={DatabaseZap} label="引用来源" value={String(sourceCount)} />
-          <MetricBlock icon={TrainFront} label="工具调用" value={String(toolCount)} />
-          <MetricBlock icon={MapPinned} label="行程天数" value={dayCount ? `${dayCount} 天` : "待生成"} />
-        </div>
-
-        <div className="workspace-session-banner">
-          <div>
-            <span>当前方案</span>
-            <strong>{activeVersion?.name || "尚未生成"}</strong>
-            <p>
-              {guestMode
-                ? "游客模式下不会保存历史与偏好画像，登录后可把当前规划写入历史中心。"
-                : activeVersion?.reason || "开始提问后，这里会持续记录当前版本的生成理由。"}
-            </p>
-          </div>
-          {guestMode && guestCarryoverReady ? (
-            <button type="button" className="secondary-action" onClick={onOpenUserCenter}>
-              <LogIn size={15} />
-              登录保存本次方案
-            </button>
-          ) : (
-            <div className="workspace-session-note">
-              <ShieldCheck size={15} />
-              <span>{guestMode ? "当前为游客会话" : "已启用历史与版本管理"}</span>
-            </div>
-          )}
-        </div>
-
-        <section className="top-stage-strip" aria-label="实时调度">
-          <div className="top-stage-head">
-            <ListChecks size={15} />
-            <strong>实时调度</strong>
-          </div>
-          {(loading || streamStages.length > 0) ? (
-            <div className="top-stage-list">
-              {streamStages.slice(0, 6).map((stage) => (
-                <div className={`top-stage-item ${stage.status}`} key={stage.name}>
-                  <span />
-                  <strong>{stage.label}</strong>
-                  <em>{stage.summary || (stage.status === "running" ? "执行中" : "完成")}</em>
-                </div>
-              ))}
-              {loading && !streamStages.length ? (
-                <div className="top-stage-item running">
-                  <span />
-                  <strong>建立连接</strong>
-                  <em>准备调度工具</em>
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="top-stage-idle">
-              <ShieldCheck size={14} />
-              <span>等待新的旅行问题</span>
-            </div>
-          )}
-        </section>
-      </section>
-
-      <div className="chat-workspace-main">
-        <section className="chat-primary-column">
-          <section className="primary-workbench-shell workbench-panel" aria-label="核心旅行决策区">
-            <div className="primary-workbench-topbar">
-              <div>
-                <div className="section-kicker">
-                  <ListChecks size={16} />
-                  核心工作区
-                </div>
-                <h2>{primaryTab === "messages" ? "消息主线" : primaryTab === "itinerary" ? "可编辑行程" : "决策模块"}</h2>
-              </div>
-              <div className="primary-workbench-tabs" role="tablist" aria-label="切换核心工作区">
-                <button
-                  type="button"
-                  className={`primary-tab-button ${primaryTab === "messages" ? "active" : ""}`}
-                  onClick={() => setPrimaryTab("messages")}
-                  role="tab"
-                  aria-selected={primaryTab === "messages"}
-                >
-                  <ListChecks size={15} />
-                  消息
-                  <span>{messages.length}</span>
-                </button>
-                <button
-                  type="button"
-                  className={`primary-tab-button ${primaryTab === "itinerary" ? "active" : ""}`}
-                  onClick={() => setPrimaryTab("itinerary")}
-                  role="tab"
-                  aria-selected={primaryTab === "itinerary"}
-                >
-                  <PencilLine size={15} />
-                  行程
-                  <span>{dayCount || 0}</span>
-                </button>
-                <button
-                  type="button"
-                  className={`primary-tab-button ${primaryTab === "decision" ? "active" : ""}`}
-                  onClick={() => setPrimaryTab("decision")}
-                  role="tab"
-                  aria-selected={primaryTab === "decision"}
-                >
-                  <WandSparkles size={15} />
-                  决策
-                  <span>{latest?.decision_modules?.length || 0}</span>
-                </button>
-              </div>
-            </div>
-
-              <div className="primary-tab-panel">
-              {primaryTab === "messages" ? (
-                <section
-                  className={`message-stream-shell ${latest?.warnings?.length ? "has-warnings" : "no-warnings"}`}
-                  aria-label="对话与规划过程"
-                >
-                  <div className="message-stream-head">
-                    <div>
-                      <div className="section-kicker">
-                        <ListChecks size={16} />
-                        对话主线
-                      </div>
-                      <h2>输入固定在底部，消息区独立滚动</h2>
-                    </div>
-                    <div className="message-stream-meta">
-                      <span>{messages.length} 条消息</span>
-                      {showJumpToLatest ? (
-                        <button type="button" className="dock-button" onClick={scrollToLatest}>
-                          <ChevronDown size={14} />
-                          回到底部
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  {latest?.warnings?.length ? (
-                    <section className="warning-strip" aria-label="风险提示">
-                      <AlertTriangle size={16} />
-                      <div>
-                        {latest.warnings.map((warning) => (
-                          <span key={warning}>{warning}</span>
-                        ))}
-                      </div>
-                    </section>
-                  ) : null}
-
-                  <div className="message-scroll-panel" ref={messageScrollRef}>
-                    <div className="message-stream">
-                      {!cards.length && !loading ? (
-                        <section className="empty-workbench in-stream" aria-label="启动提示">
-                          <ShieldCheck size={18} />
-                          <span>输入出发地、目的地、日期、预算或偏好，工作台会先检索，再给出可执行方案。</span>
-                        </section>
-                      ) : null}
-
-                      {messages.map((message, index) => (
-                        <article className={`message-block ${message.role}`} key={`${message.role}-${index}`}>
-                          <div className="message-role">{message.role === "user" ? "你" : "TripSage"}</div>
-                          {message.role === "assistant" ? <AnswerRenderer content={message.content} /> : <p>{message.content}</p>}
-                        </article>
-                      ))}
-                      {loading ? (
-                        <article className="message-block assistant loading-block">
-                          <div className="message-role">TripSage</div>
-                          <p>正在调度攻略库、铁路、天气和地图工具...</p>
-                        </article>
-                      ) : null}
-                      <div ref={messageEndRef} />
-                    </div>
-                  </div>
-                </section>
-              ) : null}
-
-              {primaryTab === "itinerary" ? (
-                latest?.itinerary ? (
-                  <EditableItinerary itinerary={latest.itinerary} loading={loading} onOptimize={onOptimizeItinerary} />
-                ) : (
-                  <PrimaryEmptyState
-                    icon={PencilLine}
-                    title="还没有可编辑行程"
-                    description="先在消息里提出旅行需求，生成方案后可以在这里调整每天的景点、交通和预算，再交给智能体二次优化。"
-                  />
-                )
-              ) : null}
-
-              {primaryTab === "decision" ? (
-                latest?.decision_modules?.length ? (
-                  <ActionableDecisionWorkbench
-                    modules={latest.decision_modules}
-                    loading={loading}
-                    states={decisionModuleStates}
-                    onAction={onDecisionModuleAction}
-                  />
-                ) : (
-                  <PrimaryEmptyState
-                    icon={WandSparkles}
-                    title="决策模块等待生成"
-                    description="当方案生成后，交通建议、雨天备选、行程强度、预算提示和风险提醒会集中放在这里，不再挤占对话空间。"
-                  />
-                )
-              ) : null}
-            </div>
-          </section>
-        </section>
-
-        <aside className="chat-secondary-column" aria-label="结构化结果与铁路结果">
-          <section className="secondary-workbench-shell workbench-panel" aria-label="右侧工作台">
-            <div className="secondary-workbench-topbar">
-              <div>
-                <div className="section-kicker">
-                  <DatabaseZap size={16} />
-                  证据与比选
-                </div>
-                <h2>{secondaryTab === "railway" ? "铁路比选" : "版本回看"}</h2>
-              </div>
-              <div className="secondary-workbench-tabs" role="tablist" aria-label="切换右侧工作台">
-                <button
-                  type="button"
-                  className={`secondary-tab-button ${secondaryTab === "railway" ? "active" : ""}`}
-                  onClick={() => setSecondaryTab("railway")}
-                  role="tab"
-                  aria-selected={secondaryTab === "railway"}
-                  disabled={!railwayCard}
-                >
-                  <TrainFront size={15} />
-                  车次
-                  <span>{railwayTrains.length}</span>
-                </button>
-                <button
-                  type="button"
-                  className={`secondary-tab-button ${secondaryTab === "versions" ? "active" : ""}`}
-                  onClick={() => setSecondaryTab("versions")}
-                  role="tab"
-                  aria-selected={secondaryTab === "versions"}
-                  disabled={!planVersions.length}
-                >
-                  <GitBranch size={15} />
-                  版本
-                  <span>{planVersions.length}</span>
-                </button>
-              </div>
-            </div>
-
-            {digestCards.length ? (
-              <div className="secondary-summary-strip" aria-label="调度摘要">
-                {digestCards.map((card) => (
-                  <article className={`secondary-summary-card ${card.type}`} key={`${card.type}-${card.title}`}>
-                    <DatabaseZap size={14} />
-                    <div>
-                      <span>{card.title}</span>
-                      <strong>{card.summary}</strong>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="secondary-workbench-empty compact">铁路、天气、路线和引用证据会在这里汇总。</div>
-            )}
-
-            <div className="secondary-tab-panel">
-              {secondaryTab === "railway" ? (
-                railwayCard ? (
-                  <RailwayWorkbench
-                    railwayCard={railwayCard}
-                    trains={sortedRailwayTrains}
-                    totalTrains={railwayTrains.length}
-                    earliestTrain={earliestTrain}
-                    fastestTrain={fastestTrain}
-                    expanded={railwayExpanded}
-                    sortMode={railwaySortMode}
-                    onSortChange={setRailwaySortMode}
-                    onToggleExpanded={() => setRailwayExpanded((current) => !current)}
-                    onUseTrain={(train) => onSubmit(buildTrainAdoptionPrompt(train))}
-                  />
-                ) : (
-                  <div className="secondary-workbench-empty">当前还没有可比较车次，触发铁路查询后会在这里连续展示。</div>
-                )
-              ) : null}
-
-              {secondaryTab === "versions" ? (
-                planVersions.length ? (
-                  <PlanVersionRail
-                    versions={planVersions}
-                    activeVersionId={activeVersionId}
-                    compare={versionCompare}
-                    shareUrl={shareUrl}
-                    canShareVersion={canShareVersion}
-                    guestMode={guestMode}
-                    onRequireLogin={onOpenUserCenter}
-                    onSelect={onVersionSelect}
-                    onExport={onExportVersion}
-                    onShare={onShareVersion}
-                  />
-                ) : (
-                  <div className="secondary-workbench-empty">方案生成后，每一次决策产物都会在这里沉淀成版本记录。</div>
-                )
-              ) : null}
-            </div>
-          </section>
-        </aside>
-      </div>
-
-      <form className="composer sticky-composer workspace-bottom-composer" onSubmit={handleSubmit} ref={composerRef}>
-        <div className="composer-label">
-          <span>Ask TripSage</span>
-          <strong>Ctrl + Enter 发送</strong>
-        </div>
-        <textarea
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="例如：杭州出发，五一去南京两天一夜，优先高铁，预算 1800 元，请给我可执行方案。"
-          rows={2}
-        />
-        <button type="submit" aria-label="发送问题" disabled={loading || !value.trim()} title="发送">
-          <SendHorizonal size={19} />
-        </button>
-      </form>
-    </main>
-  );
-}
-
-function MetricBlock({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof Layers3;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="workspace-metric-block">
-      <Icon size={17} />
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
 }
 
 function trainKey(train: RailwayTrain, index = 0) {
@@ -649,25 +159,503 @@ function hasAvailableSeat(train: RailwayTrain) {
   });
 }
 
-function trainDecisionTags(train: RailwayTrain, earliestTrain?: RailwayTrain, fastestTrain?: RailwayTrain) {
+function buildTrainDecisionTags(train: RailwayTrain, earliestTrain?: RailwayTrain, fastestTrain?: RailwayTrain) {
   const tags: string[] = [];
   if (train.train_no && train.train_no === earliestTrain?.train_no) tags.push("最早出发");
   if (train.train_no && train.train_no === fastestTrain?.train_no) tags.push("耗时最短");
   if (isHighSpeedTrain(train)) tags.push("高铁优先");
   if (hasAvailableSeat(train)) tags.push("余票较稳");
   const start = toMinutesFromTime(train.start_time);
-  if (start >= 8 * 60 && start <= 18 * 60) tags.push("时间友好");
+  if (start >= 8 * 60 && start <= 18 * 60) tags.push("时段友好");
   return tags.slice(0, 4);
 }
 
 function buildTrainAdoptionPrompt(train: RailwayTrain) {
-  const route = `${train.from_station || "出发站"} 到 ${train.to_station || "到达站"}`;
   return [
     `请把 ${train.train_no || "这趟车"} 纳入当前旅行方案继续优化。`,
-    `车次信息：${route}，${train.start_time || "--:--"} 出发，${train.arrive_time || "--:--"} 到达，耗时 ${train.duration || "待确认"}。`,
+    `车次信息：${train.from_station || "出发站"} 到 ${train.to_station || "到达站"}，${train.start_time || "--:--"} 出发，${train.arrive_time || "--:--"} 到达，耗时 ${train.duration || "待确认"}。`,
     `座席情况：${seatSummary(train)}。`,
     "请重新评估当天景点顺序、出站后的地图通勤、预算和行程强度，并输出更新后的可执行方案。",
   ].join("\n");
+}
+
+export function ChatWorkspace({
+  messages,
+  latest,
+  loading,
+  guestMode,
+  guestCarryoverReady,
+  searchMode,
+  streamStages,
+  planVersions,
+  activeVersionId,
+  versionCompare,
+  shareUrl,
+  canShareVersion,
+  starterPrompts,
+  profileHighlights,
+  profileDigest,
+  decisionModuleStates,
+  onOpenPlanner,
+  onOpenEvidence,
+  onOpenRailway,
+  onOpenUserCenter,
+  onSubmit,
+  onOptimizeItinerary,
+  onDecisionModuleAction,
+  onVersionSelect,
+  onExportVersion,
+  onShareVersion,
+}: ChatWorkspaceProps) {
+  const [value, setValue] = useState("");
+  const [primaryTab, setPrimaryTab] = useState<PrimaryWorkbenchTab>("messages");
+  const [secondaryTab, setSecondaryTab] = useState<SecondaryWorkbenchTab>("railway");
+  const [railwaySortMode, setRailwaySortMode] = useState<RailwaySortMode>("recommended");
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+
+  const messageScrollRef = useRef<HTMLDivElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const cards = latest?.cards || [];
+  const activeVersion = planVersions.find((item) => item.id === activeVersionId) || null;
+  const railwayCard = cards.find((card) => card.type === "railway") || null;
+  const railwayTrains = useMemo(() => getRailwayTrains(railwayCard), [railwayCard]);
+  const sortedRailwayTrains = useMemo(() => {
+    if (railwaySortMode === "earliest") {
+      return [...railwayTrains].sort((left, right) => toMinutesFromTime(left.start_time) - toMinutesFromTime(right.start_time));
+    }
+    if (railwaySortMode === "fastest") {
+      return [...railwayTrains].sort((left, right) => toDurationMinutes(left.duration) - toDurationMinutes(right.duration));
+    }
+    return railwayTrains;
+  }, [railwaySortMode, railwayTrains]);
+  const earliestTrain = useMemo(() => findEarliestTrain(railwayTrains), [railwayTrains]);
+  const fastestTrain = useMemo(() => findFastestTrain(railwayTrains), [railwayTrains]);
+  const latestStage = streamStages[streamStages.length - 1];
+  const itineraryCount = latest?.itinerary?.length || 0;
+  const sourceCount = latest?.sources?.length || 0;
+  const toolCount = latest?.tool_calls?.length || 0;
+  const decisionCount = latest?.decision_modules?.length || 0;
+  const destination = cards.find((card) => card.type === "destination")?.title || "准备开始新的旅行方案";
+
+  function submitCurrent() {
+    const text = value.trim();
+    if (!text || loading) return;
+    setPrimaryTab("messages");
+    setValue("");
+    onSubmit(text);
+  }
+
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    submitCurrent();
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    // 中文输入保留换行，仅在快捷键触发时发送。
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      submitCurrent();
+    }
+  }
+
+  function focusComposer() {
+    setPrimaryTab("messages");
+    window.requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus();
+    });
+  }
+
+  function scrollToLatest() {
+    setPrimaryTab("messages");
+    window.requestAnimationFrame(() => {
+      const element = messageScrollRef.current;
+      if (!element) return;
+      element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+    });
+  }
+
+  function primePrompt(prompt: string) {
+    setPrimaryTab("messages");
+    setValue(prompt);
+    window.requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus();
+      composerTextareaRef.current?.setSelectionRange(prompt.length, prompt.length);
+    });
+  }
+
+  useEffect(() => {
+    if (primaryTab !== "messages") return;
+    const element = messageScrollRef.current;
+    if (!element) return;
+    element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+  }, [messages.length, loading, primaryTab]);
+
+  useEffect(() => {
+    const element = messageScrollRef.current;
+    if (!element) return;
+
+    const handleScroll = () => {
+      const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+      setShowJumpToLatest(distanceToBottom > 180);
+    };
+
+    handleScroll();
+    element.addEventListener("scroll", handleScroll);
+    return () => element.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    if (!railwayCard && planVersions.length) {
+      setSecondaryTab("versions");
+      return;
+    }
+    if (railwayCard) {
+      setSecondaryTab((current) => (current === "versions" && !planVersions.length ? "railway" : current));
+    }
+  }, [planVersions.length, railwayCard]);
+
+  return (
+    <main className="planner-workstation" aria-label="旅行规划主工作台">
+      <section className="planner-workstation-bar">
+        <div className="planner-bar-copy">
+          <div className="section-kicker">
+            <WandSparkles size={16} />
+            规划工作台
+          </div>
+          <h2>{activeVersion?.name || destination}</h2>
+          <p>{loading ? latestStage?.summary || "正在调度攻略库、铁路、天气和地图工具" : profileDigest}</p>
+        </div>
+
+        <div className="planner-bar-side">
+          <div className="planner-status-cluster">
+            <PlannerStatusChip label="检索模式" value={searchModeLabel[searchMode]} tone="jade" />
+            <PlannerStatusChip label="方案版本" value={String(planVersions.length)} tone="rail" />
+            <PlannerStatusChip label="行程天数" value={itineraryCount ? `${itineraryCount} 天` : "待生成"} tone="ink" />
+            <PlannerStatusChip label="铁路候选" value={String(railwayTrains.length)} tone="sun" />
+          </div>
+          <div className="planner-bar-actions">
+            <button type="button" className="secondary-action" onClick={onOpenPlanner}>
+              <PanelLeftOpen size={15} />
+              条件
+            </button>
+            <button type="button" className="secondary-action" onClick={onOpenEvidence}>
+              <PanelRightOpen size={15} />
+              证据
+            </button>
+            <button type="button" className="secondary-action" onClick={onOpenRailway}>
+              <TrainFront size={15} />
+              铁路
+            </button>
+            {guestMode && guestCarryoverReady ? (
+              <button type="button" className="secondary-action" onClick={onOpenUserCenter}>
+                <LogIn size={15} />
+                登录保存本次方案
+              </button>
+            ) : null}
+            {showJumpToLatest ? (
+              <button type="button" className="secondary-action" onClick={scrollToLatest}>
+                <ChevronDown size={15} />
+                回到底部
+              </button>
+            ) : null}
+            <button type="button" className="primary-action" onClick={focusComposer}>
+              <SendHorizonal size={15} />
+              开始规划
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="planner-workstation-grid">
+        <section className="planner-primary-surface" aria-label="核心决策区">
+          <header className="planner-surface-head">
+            <div>
+              <div className="section-kicker">
+                <ListChecks size={15} />
+                核心决策区
+              </div>
+              <h3>{primaryTab === "messages" ? "对话主线" : primaryTab === "itinerary" ? "可编辑行程" : "决策模块"}</h3>
+            </div>
+            <div className="planner-tab-row" role="tablist" aria-label="切换核心工作区">
+              <button
+                type="button"
+                className={`planner-tab-button ${primaryTab === "messages" ? "active" : ""}`}
+                onClick={() => setPrimaryTab("messages")}
+                role="tab"
+                aria-selected={primaryTab === "messages"}
+              >
+                <ListChecks size={14} />
+                消息
+                <span>{messages.length}</span>
+              </button>
+              <button
+                type="button"
+                className={`planner-tab-button ${primaryTab === "itinerary" ? "active" : ""}`}
+                onClick={() => setPrimaryTab("itinerary")}
+                role="tab"
+                aria-selected={primaryTab === "itinerary"}
+              >
+                <PencilLine size={14} />
+                行程
+                <span>{itineraryCount}</span>
+              </button>
+              <button
+                type="button"
+                className={`planner-tab-button ${primaryTab === "decision" ? "active" : ""}`}
+                onClick={() => setPrimaryTab("decision")}
+                role="tab"
+                aria-selected={primaryTab === "decision"}
+              >
+                <WandSparkles size={14} />
+                决策
+                <span>{decisionCount}</span>
+              </button>
+            </div>
+          </header>
+
+          <DispatchRail stages={streamStages} loading={loading} />
+
+          {latest?.warnings?.length ? (
+            <section className="planner-warning-strip" aria-label="风险提醒">
+              <AlertTriangle size={16} />
+              <div>
+                {latest.warnings.map((warning) => (
+                  <span key={warning}>{warning}</span>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          <div className="planner-primary-content">
+            {primaryTab === "messages" ? (
+              <div className="planner-message-surface">
+                <div className="planner-message-head">
+                  <div>
+                    <strong>会话记录</strong>
+                    <span>当前轮次</span>
+                  </div>
+                  <div className="planner-inline-metrics">
+                    <span>{sourceCount} 条来源</span>
+                    <span>{toolCount} 次工具</span>
+                    <span>{decisionCount} 个决策模块</span>
+                  </div>
+                </div>
+
+                <div className="planner-message-scroll" ref={messageScrollRef}>
+                  <div className="planner-message-list">
+                    {messages.map((message, index) => (
+                      <article className={`planner-message-bubble ${message.role}`} key={`${message.role}-${index}`}>
+                        <div className="planner-message-role">{message.role === "user" ? "你" : "TripSage"}</div>
+                        {message.role === "assistant" ? <AnswerRenderer content={message.content} /> : <p>{message.content}</p>}
+                      </article>
+                    ))}
+                    {loading ? (
+                      <article className="planner-message-bubble assistant loading">
+                        <div className="planner-message-role">TripSage</div>
+                        <p>正在调度攻略库、铁路、天气和地图工具，请稍候...</p>
+                      </article>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {primaryTab === "itinerary" ? (
+              latest?.itinerary ? (
+                <div className="planner-scroll-stage">
+                  <EditableItinerary itinerary={latest.itinerary} loading={loading} onOptimize={onOptimizeItinerary} />
+                </div>
+              ) : (
+                <PrimaryEmptyState
+                  icon={PencilLine}
+                  title="还没有可编辑行程"
+                  description="先生成方案，再在这里逐日调整并继续优化。"
+                />
+              )
+            ) : null}
+
+            {primaryTab === "decision" ? (
+              latest?.decision_modules?.length ? (
+                <div className="planner-scroll-stage">
+                  <ActionableDecisionWorkbench
+                    modules={latest.decision_modules}
+                    loading={loading}
+                    states={decisionModuleStates}
+                    onAction={onDecisionModuleAction}
+                  />
+                </div>
+              ) : (
+                <PrimaryEmptyState
+                  icon={WandSparkles}
+                  title="决策模块等待生成"
+                  description="等待决策结果。"
+                />
+              )
+            ) : null}
+          </div>
+
+          <form className="planner-composer-shell" onSubmit={handleSubmit}>
+            <div className="planner-composer-meta">
+              <div>
+                <span>规划输入</span>
+                <strong>{guestMode ? "游客会话" : "已连接长期记忆"}</strong>
+              </div>
+              <em>Ctrl + Enter 发送</em>
+            </div>
+            <div className="planner-composer">
+              <textarea
+                ref={composerTextareaRef}
+                value={value}
+                onChange={(event) => setValue(event.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="例如：杭州出发，五一去南京两天一夜，优先高铁，预算 1800 元，请给我可执行方案。"
+                rows={3}
+              />
+              <button type="submit" aria-label="发送问题" disabled={loading || !value.trim()} title="发送">
+                <SendHorizonal size={18} />
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <aside className="planner-secondary-surface" aria-label="铁路结果与版本区">
+          <header className="planner-surface-head secondary">
+            <div>
+              <div className="section-kicker">
+                <DatabaseZap size={15} />
+                证据与比选
+              </div>
+              <h3>{secondaryTab === "railway" ? "铁路工作区" : "版本工作区"}</h3>
+            </div>
+            <div className="planner-tab-row" role="tablist" aria-label="切换右侧工作区">
+              <button
+                type="button"
+                className={`planner-tab-button ${secondaryTab === "railway" ? "active" : ""}`}
+                onClick={() => setSecondaryTab("railway")}
+                role="tab"
+                aria-selected={secondaryTab === "railway"}
+                disabled={!railwayCard}
+              >
+                <TrainFront size={14} />
+                车次
+                <span>{railwayTrains.length}</span>
+              </button>
+              <button
+                type="button"
+                className={`planner-tab-button ${secondaryTab === "versions" ? "active" : ""}`}
+                onClick={() => setSecondaryTab("versions")}
+                role="tab"
+                aria-selected={secondaryTab === "versions"}
+                disabled={!planVersions.length}
+              >
+                <GitBranch size={14} />
+                版本
+                <span>{planVersions.length}</span>
+              </button>
+            </div>
+          </header>
+
+          <div className="planner-secondary-scroll">
+            {secondaryTab === "railway" ? (
+              railwayCard ? (
+                <RailwayWorkbench
+                  railwayCard={railwayCard}
+                  trains={sortedRailwayTrains}
+                  totalTrains={railwayTrains.length}
+                  earliestTrain={earliestTrain}
+                  fastestTrain={fastestTrain}
+                  sortMode={railwaySortMode}
+                  onSortChange={setRailwaySortMode}
+                  onUseTrain={(train) => onSubmit(buildTrainAdoptionPrompt(train))}
+                />
+              ) : (
+                <SecondaryEmptyState text="等待铁路查询结果。" />
+              )
+            ) : null}
+
+            {secondaryTab === "versions" ? (
+              planVersions.length ? (
+                <PlanVersionRail
+                  versions={planVersions}
+                  activeVersionId={activeVersionId}
+                  compare={versionCompare}
+                  shareUrl={shareUrl}
+                  canShareVersion={canShareVersion}
+                  guestMode={guestMode}
+                  onRequireLogin={onOpenUserCenter}
+                  onSelect={onVersionSelect}
+                  onExport={onExportVersion}
+                  onShare={onShareVersion}
+                />
+              ) : (
+                <SecondaryEmptyState text="等待方案版本生成。" />
+              )
+            ) : null}
+          </div>
+        </aside>
+      </section>
+    </main>
+  );
+}
+
+function PlannerStatusChip({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "jade" | "rail" | "sun" | "ink";
+}) {
+  return (
+    <div className={`planner-status-chip ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function DispatchRail({ stages, loading }: { stages: StreamStage[]; loading: boolean }) {
+  const displayStages = stages.length
+    ? stages.slice(-4)
+    : [{ name: "idle", label: "待处理", status: "done" as const, summary: "等待输入" }];
+
+  return (
+    <section className="planner-dispatch-rail" aria-label="实时调度">
+      <div className="planner-dispatch-title">
+        <Clock3 size={15} />
+        <strong>实时调度</strong>
+        <span>{loading ? "执行中" : "空闲"}</span>
+      </div>
+      <div className="planner-dispatch-list">
+        {displayStages.map((stage) => (
+          <article className={`planner-dispatch-card ${stage.status}`} key={stage.name}>
+            <strong>{stage.label}</strong>
+            <span>{stage.summary || (stage.status === "running" ? "执行中" : "已完成")}</span>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SecondaryStat({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: typeof TrainFront;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="planner-secondary-stat">
+      <Icon size={15} />
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
 }
 
 function RailwayWorkbench({
@@ -676,24 +664,19 @@ function RailwayWorkbench({
   totalTrains,
   earliestTrain,
   fastestTrain,
-  expanded,
   sortMode,
   onSortChange,
-  onToggleExpanded,
   onUseTrain,
 }: {
-  railwayCard: NonNullable<ChatResponse["cards"][number]>;
+  railwayCard: ChatResponse["cards"][number];
   trains: RailwayTrain[];
   totalTrains: number;
   earliestTrain?: RailwayTrain;
   fastestTrain?: RailwayTrain;
-  expanded: boolean;
   sortMode: RailwaySortMode;
   onSortChange: (mode: RailwaySortMode) => void;
-  onToggleExpanded: () => void;
   onUseTrain: (train: RailwayTrain) => void;
 }) {
-  const dateText = typeof railwayCard.meta?.date === "string" ? railwayCard.meta.date : "日期待确认";
   const [trainTypeFilter, setTrainTypeFilter] = useState<TrainTypeFilter>("all");
   const [seatFilter, setSeatFilter] = useState<SeatFilter>("all");
   const [selectedTrainKey, setSelectedTrainKey] = useState<string | null>(null);
@@ -716,50 +699,44 @@ function RailwayWorkbench({
   }, [filteredTrains, selectedTrainKey]);
 
   function togglePinned(key: string) {
-    setPinnedKeys((current) =>
-      current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
-    );
+    setPinnedKeys((current) => (
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
+    ));
   }
 
   return (
-    <section className="railway-panel workbench-panel" aria-label="铁路结果工作台">
-      <div className="railway-panel-head">
+    <section className="railway-desk" aria-label="铁路结果工作区">
+      <div className="railway-desk-hero">
         <div>
           <div className="section-kicker">
-            <TrainFront size={16} />
+            <TrainFront size={15} />
             铁路结果
           </div>
-          <h2>{railwayCard.summary || "可用车次列表"}</h2>
-          <p>完整车次列表放在右侧独立滚动区，20 条结果可以直接连续查看，不再被对话区挤掉。</p>
+          <h4>{railwayCard.summary || "可用车次列表"}</h4>
+          <p>完整车次池，支持筛选、比选与回写。</p>
         </div>
-        <div className="railway-panel-meta">
-          <span>{totalTrains} 条车次</span>
-          <strong>
-            {sortMode === "recommended"
-              ? "当前按推荐顺序"
-              : sortMode === "earliest"
-                ? "当前按最早出发"
-                : "当前按最短耗时"}
-          </strong>
+        <div className="railway-desk-topline">
+          <span>{totalTrains} 条候选</span>
+          <strong>{typeof railwayCard.meta?.date === "string" ? railwayCard.meta?.date : "日期待确认"}</strong>
         </div>
       </div>
 
-      <div className="railway-overview-grid">
-        <div className="railway-overview-card">
-          <span>最早出发</span>
-          <strong>{earliestTrain?.start_time || "--:--"}</strong>
-          <p>{earliestTrain ? `${earliestTrain.train_no || "车次"} · ${earliestTrain.from_station || "出发"} → ${earliestTrain.to_station || "到达"}` : "等待铁路结果"}</p>
-        </div>
-        <div className="railway-overview-card">
-          <span>最快车程</span>
-          <strong>{fastestTrain?.duration || "--"}</strong>
-          <p>{fastestTrain ? `${fastestTrain.train_no || "车次"} · ${fastestTrain.start_time || "--:--"} 出发` : "等待铁路结果"}</p>
-        </div>
-        <div className="railway-overview-card">
-          <span>当前日期</span>
-          <strong>{dateText}</strong>
-          <p>余票、停运和临时变更仍以 12306 官方结果为准。</p>
-        </div>
+      <div className="railway-snapshot-grid">
+        <RailwaySnapshotCard
+          label="最早出发"
+          value={earliestTrain?.start_time || "--:--"}
+          detail={earliestTrain ? `${earliestTrain.train_no || "车次"} · ${earliestTrain.from_station || "出发"} → ${earliestTrain.to_station || "到达"}` : "等待结果"}
+        />
+        <RailwaySnapshotCard
+          label="最短耗时"
+          value={fastestTrain?.duration || "--"}
+          detail={fastestTrain ? `${fastestTrain.train_no || "车次"} · ${fastestTrain.start_time || "--:--"} 出发` : "等待结果"}
+        />
+        <RailwaySnapshotCard
+          label="筛选结果"
+          value={`${filteredTrains.length}/${totalTrains}`}
+          detail="当前视图"
+        />
       </div>
 
       <div className="railway-toolbar">
@@ -774,15 +751,9 @@ function RailwayWorkbench({
             最短耗时
           </button>
         </div>
-        <button type="button" className="railway-expand-button" onClick={onToggleExpanded}>
-          {expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-          {expanded ? "恢复紧凑高度" : `展开全部 ${totalTrains} 条`}
-        </button>
-      </div>
 
-      <div className="train-decision-controls" aria-label="车次筛选与决策操作">
-        <div className="train-filter-group">
-          <Filter size={15} />
+        <div className="railway-filter-group">
+          <Filter size={14} />
           <button type="button" className={trainTypeFilter === "all" ? "active" : ""} onClick={() => setTrainTypeFilter("all")}>
             全部
           </button>
@@ -790,11 +761,12 @@ function RailwayWorkbench({
             高铁动车
           </button>
           <button type="button" className={trainTypeFilter === "normal" ? "active" : ""} onClick={() => setTrainTypeFilter("normal")}>
-            普速
+            普通列车
           </button>
         </div>
-        <div className="train-filter-group">
-          <CheckCircle2 size={15} />
+
+        <div className="railway-filter-group">
+          <CheckCircle2 size={14} />
           <button type="button" className={seatFilter === "all" ? "active" : ""} onClick={() => setSeatFilter("all")}>
             不限余票
           </button>
@@ -802,54 +774,52 @@ function RailwayWorkbench({
             只看有票
           </button>
         </div>
-        <div className="train-result-count">
-          <strong>{filteredTrains.length}</strong>
-          <span>/ {totalTrains} 条可见</span>
-        </div>
       </div>
 
       {selectedTrain ? (
-        <div className="selected-train-decision">
+        <div className="railway-selection-banner">
           <div>
-            <span>已选车次</span>
+            <span>当前选中车次</span>
             <strong>
               {selectedTrain.train_no || "车次"} · {selectedTrain.start_time || "--:--"} 出发 · {selectedTrain.duration || "待确认"}
             </strong>
-            <p>{selectedTrain.from_station || "出发站"} → {selectedTrain.to_station || "到达站"}，{seatSummary(selectedTrain)}</p>
+            <p>
+              {selectedTrain.from_station || "出发站"} → {selectedTrain.to_station || "到达站"} · {seatSummary(selectedTrain)}
+            </p>
           </div>
           <button type="button" className="primary-action" onClick={() => onUseTrain(selectedTrain)}>
             <SendHorizonal size={15} />
-            纳入方案
+            纳入当前方案
           </button>
         </div>
       ) : null}
 
-      <div className={`railway-list-shell ${expanded ? "expanded" : ""}`}>
-        <div className="railway-list">
-          {filteredTrains.map((train, index) => {
-            const key = trainKey(train, index);
-            const tags = trainDecisionTags(train, earliestTrain, fastestTrain);
-            const isSelected = selectedTrainKey === key;
-            const isPinned = pinnedKeys.includes(key);
-            return (
-            <article className={`train-card-expanded decision-ready ${isSelected ? "selected" : ""}`} key={key}>
-              <div className="train-card-head">
-                <div className="train-code-badge">{train.train_no || "车次"}</div>
-                <div className="train-route-main">
+      <div className="railway-result-scroll">
+        {filteredTrains.map((train, index) => {
+          const key = trainKey(train, index);
+          const tags = buildTrainDecisionTags(train, earliestTrain, fastestTrain);
+          const isSelected = selectedTrainKey === key;
+          const isPinned = pinnedKeys.includes(key);
+
+          return (
+            <article className={`railway-train-card ${isSelected ? "selected" : ""}`} key={key}>
+              <div className="railway-train-head">
+                <div className="railway-train-code">{train.train_no || "车次"}</div>
+                <div className="railway-train-route">
                   <strong>{train.from_station || "出发站"}</strong>
                   <span>→</span>
                   <strong>{train.to_station || "到达站"}</strong>
                 </div>
-                <div className="train-duration-pill">{train.duration || "待确认"}</div>
+                <div className="railway-train-duration">{train.duration || "待确认"}</div>
               </div>
 
-              <div className="train-recommendation-row">
-                <div className="train-tags">
-                  {tags.length ? tags.map((tag) => <span key={tag}>{tag}</span>) : <span>待进一步比较</span>}
-                </div>
+              <div className="railway-train-tags">
+                {(tags.length ? tags : ["候选"]).map((tag) => (
+                  <span key={tag}>{tag}</span>
+                ))}
                 <button
                   type="button"
-                  className={`train-pin-button ${isPinned ? "active" : ""}`}
+                  className={`railway-pin-button ${isPinned ? "active" : ""}`}
                   onClick={() => togglePinned(key)}
                   title={isPinned ? "取消重点关注" : "重点关注"}
                   aria-label={isPinned ? "取消重点关注" : "重点关注"}
@@ -858,7 +828,7 @@ function RailwayWorkbench({
                 </button>
               </div>
 
-              <div className="train-card-grid">
+              <div className="railway-train-metrics">
                 <div>
                   <span>出发</span>
                   <strong>{train.start_time || "--:--"}</strong>
@@ -873,7 +843,7 @@ function RailwayWorkbench({
                 </div>
               </div>
 
-              <div className="train-card-actions">
+              <div className="railway-train-actions">
                 <button type="button" className="secondary-action" onClick={() => setSelectedTrainKey(isSelected ? null : key)}>
                   <CheckCircle2 size={14} />
                   {isSelected ? "取消选择" : "选为候选"}
@@ -885,16 +855,34 @@ function RailwayWorkbench({
               </div>
             </article>
           );
-          })}
-          {!filteredTrains.length ? (
-            <div className="railway-empty-state">
-              <ShieldAlert size={16} />
-              <span>当前筛选条件下没有车次，放宽车次类型或余票条件后再查看。</span>
-            </div>
-          ) : null}
-        </div>
+        })}
+
+        {!filteredTrains.length ? (
+          <div className="railway-empty-state">
+            <ShieldAlert size={16} />
+            <span>当前筛选条件下没有车次，放宽列车类型或余票条件后再查看。</span>
+          </div>
+        ) : null}
       </div>
     </section>
+  );
+}
+
+function RailwaySnapshotCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <article className="railway-snapshot-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <p>{detail}</p>
+    </article>
   );
 }
 
@@ -913,47 +901,41 @@ function ActionableDecisionWorkbench({
   const ignoredCount = modules.filter((module) => states[buildDecisionModuleKey(module)] === "ignored").length;
 
   return (
-    <section className="decision-workbench workbench-panel" aria-label="结构化旅行决策">
+    <section className="decision-workbench-studio" aria-label="结构化旅行决策">
       <div className="decision-workbench-head">
         <div>
           <div className="section-kicker">
-            <WandSparkles size={16} />
-            决策面板
+            <WandSparkles size={15} />
+            决策模块
           </div>
-          <h3>把建议从“可看”变成“可操作”</h3>
+          <h4>交通、预算、雨天与风险建议在这里集中处理</h4>
         </div>
-        <div className="decision-workbench-stats" aria-label="决策模块处理统计">
+        <div className="decision-workbench-stats">
           <span>总计 {modules.length}</span>
           <span>已采纳 {acceptedCount}</span>
           <span>已忽略 {ignoredCount}</span>
         </div>
       </div>
 
-      <div className="decision-module-grid">
+      <div className="decision-module-grid premium">
         {modules.map((module) => {
           const Icon = moduleIcons[module.type] || DatabaseZap;
-          const moduleKey = buildDecisionModuleKey(module);
-          const state = states[moduleKey];
+          const state = states[buildDecisionModuleKey(module)];
 
           return (
-            <article
-              className={`decision-module ${module.level} ${state ? `is-${state}` : "is-pending"}`}
-              key={`${module.type}-${module.title}`}
-            >
+            <article className={`decision-module-card ${module.level} ${state ? `is-${state}` : "is-pending"}`} key={`${module.type}-${module.title}`}>
               <div className="decision-module-head">
-                <div className="module-title">
-                  <Icon size={17} />
+                <div className="decision-module-title">
+                  <Icon size={16} />
                   <span>{module.title}</span>
                 </div>
-                <span className={`decision-state-badge ${state ? `is-${state}` : "is-pending"}`}>
-                  {getDecisionStateLabel(state)}
-                </span>
+                <em>{getDecisionStateLabel(state)}</em>
               </div>
 
               <strong>{module.summary}</strong>
 
               <ul>
-                {module.points.slice(0, 3).map((point) => (
+                {module.points.slice(0, 4).map((point) => (
                   <li key={point}>{point}</li>
                 ))}
               </ul>
@@ -977,14 +959,9 @@ function ActionableDecisionWorkbench({
                   <ShieldAlert size={14} />
                   忽略
                 </button>
-                <button
-                  type="button"
-                  disabled={loading}
-                  className="regenerate"
-                  onClick={() => onAction(module, "regenerate")}
-                >
+                <button type="button" disabled={loading} onClick={() => onAction(module, "regenerate")}>
                   <RefreshCw size={14} />
-                  重生成
+                  重新生成
                 </button>
               </div>
             </article>
@@ -1019,49 +996,35 @@ function PlanVersionRail({
   onShare: (versionId: string) => void;
 }) {
   return (
-    <section className="plan-version-rail workbench-panel" aria-label="方案版本管理">
-      <div className="version-head">
+    <section className="version-workbench-studio" aria-label="方案版本管理">
+      <div className="version-workbench-head">
         <div>
           <div className="section-kicker">
-            <GitBranch size={16} />
+            <GitBranch size={15} />
             方案版本
           </div>
-          <h2>保留每一次决策产物，随时回切继续优化</h2>
+          <h4>保留方案演进轨迹，随时回切继续优化</h4>
         </div>
-        <div className="version-summary">
-          <Layers3 size={15} />
-          <span>{versions.length} 个版本</span>
-        </div>
+        <span>{versions.length} 个版本</span>
       </div>
 
-      <div className="version-track">
+      <div className="version-track-rail">
         {versions.map((version, index) => {
           const isActive = version.id === activeVersionId;
-          const sourceCount = version.response.sources?.length || 0;
           const toolCount = version.response.tool_calls?.length || 0;
+          const sourceCount = version.response.sources?.length || 0;
+
           return (
-            <button
-              type="button"
-              className={`version-tab ${isActive ? "active" : ""}`}
-              onClick={() => onSelect(version.id)}
-              key={version.id}
-            >
-              <span className="version-index">{String(index + 1).padStart(2, "0")}</span>
-              <span className="version-main">
+            <button type="button" className={`version-track-card ${isActive ? "active" : ""}`} onClick={() => onSelect(version.id)} key={version.id}>
+              <div className="version-track-index">{String(index + 1).padStart(2, "0")}</div>
+              <div className="version-track-main">
                 <strong>{version.name}</strong>
-                <em>{version.reason}</em>
-              </span>
-              <span className="version-meta">
-                <span>
-                  <Clock3 size={12} />
-                  {formatVersionTime(version.createdAt)}
-                </span>
-                <span>{toolCount} 工具</span>
-                <span>{sourceCount} 来源</span>
-              </span>
+                <span>{version.reason}</span>
+                <em>{formatVersionTime(version.createdAt)} · {toolCount} 工具 · {sourceCount} 来源</em>
+              </div>
               {isActive ? <small>当前</small> : null}
               {isActive ? (
-                <span className="version-actions">
+                <div className="version-track-actions">
                   <button
                     type="button"
                     title="导出 Markdown"
@@ -1086,7 +1049,7 @@ function PlanVersionRail({
                   </button>
                   <button
                     type="button"
-                    title={canShareVersion ? "创建分享页" : "登录后分享"}
+                    title={canShareVersion ? "创建分享页" : "登录后可分享"}
                     onClick={(event) => {
                       event.stopPropagation();
                       if (!canShareVersion) {
@@ -1097,22 +1060,22 @@ function PlanVersionRail({
                     }}
                   >
                     {canShareVersion ? <Link2 size={13} /> : <LogIn size={13} />}
-                    {canShareVersion ? "分享" : "登录后分享"}
+                    {canShareVersion ? "分享" : "登录分享"}
                   </button>
-                </span>
+                </div>
               ) : null}
             </button>
           );
         })}
       </div>
 
-      {guestMode ? <div className="version-login-hint">游客模式下版本仅保留在本页，登录后可写入历史中心。</div> : null}
+      {guestMode ? <div className="version-login-hint">游客会话不写入历史中心。</div> : null}
 
       {shareUrl ? (
-        <a className="share-url-strip" href={shareUrl}>
+        <a className="version-share-strip" href={shareUrl}>
           <Link2 size={15} />
           <span>{shareUrl}</span>
-          <strong>已复制</strong>
+          <strong>已生成分享页</strong>
         </a>
       ) : null}
 
@@ -1131,7 +1094,7 @@ function VersionComparePanel({ compare }: { compare: PlanVersionCompare }) {
   ];
 
   return (
-    <div className="version-compare-panel" aria-label="方案版本差异">
+    <div className="version-compare-panel premium" aria-label="方案版本差异">
       <div className="compare-title">
         <GitCompareArrows size={16} />
         <div>
@@ -1161,6 +1124,15 @@ function formatVersionTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function SecondaryEmptyState({ text }: { text: string }) {
+  return (
+    <div className="planner-secondary-empty">
+      <ShieldCheck size={16} />
+      <span>{text}</span>
+    </div>
+  );
 }
 
 function AnswerRenderer({ content }: { content: string }) {
@@ -1229,9 +1201,7 @@ function EditableItinerary({
         index === dayIndex
           ? {
               ...day,
-              items: day.items.map((item, innerIndex) =>
-                innerIndex === itemIndex ? { ...item, [key]: value } : item,
-              ),
+              items: day.items.map((item, innerIndex) => (innerIndex === itemIndex ? { ...item, [key]: value } : item)),
             }
           : day,
       ),
@@ -1262,16 +1232,16 @@ function EditableItinerary({
   }
 
   return (
-    <section className={`editable-plan ${editing ? "editing" : ""}`} aria-label="可编辑行程方案">
-      <div className="editable-plan-header">
+    <section className={`editable-plan-studio ${editing ? "editing" : ""}`} aria-label="可编辑行程方案">
+      <div className="editable-plan-head">
         <div>
           <div className="section-kicker">
-            <PencilLine size={16} />
+            <PencilLine size={15} />
             可编辑方案
           </div>
-          <h2>你先改，智能体再根据修改后的版本继续二次优化</h2>
+          <h4>先编辑，再基于新版本继续优化</h4>
         </div>
-        <div className="plan-actions">
+        <div className="editable-plan-actions">
           <button type="button" className="secondary-action" onClick={() => setEditing((current) => !current)}>
             <PencilLine size={15} />
             {editing ? "预览" : "编辑"}
@@ -1283,7 +1253,7 @@ function EditableItinerary({
         </div>
       </div>
 
-      <div className="plan-notes">
+      <div className="editable-plan-notes">
         <label>
           <span>交通偏好</span>
           <input disabled={!editing} value={transportNote} onChange={(event) => setTransportNote(event.target.value)} />
@@ -1294,39 +1264,43 @@ function EditableItinerary({
         </label>
       </div>
 
-      <div className="timeline-band editable" aria-label="行程时间线">
+      <div className="editable-plan-grid">
         {draft.map((day, dayIndex) => (
-          <div className="day-column" key={day.day}>
-            <div className="day-title">DAY {day.day}</div>
+          <article className="editable-day-card" key={day.day}>
+            <div className="editable-day-kicker">DAY {day.day}</div>
             {editing ? (
-              <input className="day-title-input" value={day.title} onChange={(event) => updateDayTitle(dayIndex, event.target.value)} />
+              <input className="editable-day-title-input" value={day.title} onChange={(event) => updateDayTitle(dayIndex, event.target.value)} />
             ) : (
-              <h3>{day.title}</h3>
+              <h5>{day.title}</h5>
             )}
-            {day.items.map((item, itemIndex) => (
-              <div className="timeline-item editable-item" key={`${day.day}-${itemIndex}`}>
-                {editing ? (
-                  <>
-                    <input value={item.time} onChange={(event) => updateItem(dayIndex, itemIndex, "time", event.target.value)} />
-                    <input value={item.title} onChange={(event) => updateItem(dayIndex, itemIndex, "title", event.target.value)} />
-                    <textarea value={item.detail} onChange={(event) => updateItem(dayIndex, itemIndex, "detail", event.target.value)} rows={2} />
-                  </>
-                ) : (
-                  <>
-                    <span>{item.time}</span>
-                    <strong>{item.title}</strong>
-                    <p>{item.detail}</p>
-                  </>
-                )}
-              </div>
-            ))}
+
+            <div className="editable-day-items">
+              {day.items.map((item, itemIndex) => (
+                <div className="editable-day-item" key={`${day.day}-${itemIndex}`}>
+                  {editing ? (
+                    <>
+                      <input value={item.time} onChange={(event) => updateItem(dayIndex, itemIndex, "time", event.target.value)} />
+                      <input value={item.title} onChange={(event) => updateItem(dayIndex, itemIndex, "title", event.target.value)} />
+                      <textarea value={item.detail} onChange={(event) => updateItem(dayIndex, itemIndex, "detail", event.target.value)} rows={3} />
+                    </>
+                  ) : (
+                    <>
+                      <span>{item.time}</span>
+                      <strong>{item.title}</strong>
+                      <p>{item.detail}</p>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+
             {editing ? (
               <button type="button" className="add-plan-item" onClick={() => addItem(dayIndex)}>
                 <Plus size={14} />
                 新增安排
               </button>
             ) : null}
-          </div>
+          </article>
         ))}
       </div>
     </section>
@@ -1343,40 +1317,10 @@ function PrimaryEmptyState({
   description: string;
 }) {
   return (
-    <section className="primary-empty-state" aria-label={title}>
+    <section className="planner-primary-empty" aria-label={title}>
       <Icon size={24} />
       <strong>{title}</strong>
       <p>{description}</p>
-    </section>
-  );
-}
-
-function DecisionWorkbench({ modules }: { modules: DecisionModule[] }) {
-  return (
-    <section className="decision-workbench workbench-panel" aria-label="结构化旅行决策">
-      <div className="section-kicker">
-        <WandSparkles size={16} />
-        决策面板
-      </div>
-      <div className="decision-module-grid">
-        {modules.map((module) => {
-          const Icon = moduleIcons[module.type] || DatabaseZap;
-          return (
-            <article className={`decision-module ${module.level}`} key={`${module.type}-${module.title}`}>
-              <div className="module-title">
-                <Icon size={17} />
-                <span>{module.title}</span>
-              </div>
-              <strong>{module.summary}</strong>
-              <ul>
-                {module.points.slice(0, 3).map((point) => (
-                  <li key={point}>{point}</li>
-                ))}
-              </ul>
-            </article>
-          );
-        })}
-      </div>
     </section>
   );
 }

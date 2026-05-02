@@ -12,6 +12,7 @@ backend/**/*.pyc
 # Node
 frontend/node_modules/
 frontend/dist/
+frontend/tmp-*.png
 
 # Env
 backend/.env

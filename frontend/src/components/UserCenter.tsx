@@ -225,7 +225,7 @@ export function UserCenter({
             <p className="user-current">
               {currentUser
                 ? `当前账号：${currentUser.display_name || currentUser.username || "未命名用户"}`
-                : "当前为游客模式，登录后可把这次规划写入历史中心继续优化。"}
+                : "当前为游客会话，登录后可写入历史中心继续优化。"}
             </p>
           </div>
           <div className="user-header-actions">

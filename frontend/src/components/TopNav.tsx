@@ -28,17 +28,16 @@ interface TopNavProps {
 
 function statusText(value?: string) {
   if (!value || value === "offline") return "离线";
-  if (value === "configured") return "已连接";
+  if (value === "configured") return "在线";
   if (value === "demo") return "演示";
   if (value === "sqlite_keyword_ready") return "就绪";
   return value;
 }
 
-function statusLevel(value?: string) {
-  // 统一状态胶囊颜色映射，避免组件内部散落重复判断。
-  if (!value || value === "offline") return "is-offline";
-  if (value === "demo" || value === "sqlite_keyword_ready") return "is-demo";
-  return "is-ready";
+function statusTone(value?: string) {
+  if (!value || value === "offline") return "offline";
+  if (value === "demo" || value === "sqlite_keyword_ready") return "demo";
+  return "ready";
 }
 
 export function TopNav({
@@ -52,31 +51,32 @@ export function TopNav({
   onLogout,
 }: TopNavProps) {
   const items = [
-    { label: "DeepSeek", value: status?.llm, icon: GaugeCircle },
+    { label: "模型", value: status?.llm, icon: GaugeCircle },
     { label: "12306", value: status?.mcp_12306, icon: TrainFront },
     { label: "天气", value: status?.amap, icon: Umbrella },
     { label: "地图", value: status?.amap, icon: Map },
     { label: "联网", value: status?.web_search, icon: Search },
-    { label: "知识库", value: status?.vector_store, icon: Database },
+    { label: "攻略库", value: status?.vector_store, icon: Database },
   ];
-  const readyCount = items.filter((item) => statusLevel(item.value) === "is-ready").length;
+  const readyCount = items.filter((item) => statusTone(item.value) === "ready").length;
+  const userName = currentUser?.display_name || currentUser?.username || "游客";
 
   return (
-    <header className="top-nav">
-      <div className="brand-block">
+    <header className="top-nav top-nav-refined">
+      <div className="top-nav-brand">
         <div className="brand-mark">TS</div>
-        <div>
-          <div className="brand-title">TripSage Agent</div>
-          <div className="brand-subtitle">行迹智策 · 中国旅行决策工作台</div>
+        <div className="top-nav-brand-copy">
+          <strong>TripSage Agent</strong>
+          <span>中国旅行决策平台</span>
         </div>
       </div>
 
-      <div className="status-rail" aria-label="工具状态">
+      <div className="top-nav-status-strip" aria-label="系统状态">
         {items.map((item) => {
           const Icon = item.icon;
           return (
-            <div className={`status-pill ${statusLevel(item.value)}`} key={item.label}>
-              <Icon size={15} />
+            <div key={item.label} className={`top-nav-status-chip ${statusTone(item.value)}`}>
+              <Icon size={14} />
               <span>{item.label}</span>
               <strong>{statusText(item.value)}</strong>
             </div>
@@ -84,39 +84,41 @@ export function TopNav({
         })}
       </div>
 
-      <div className="nav-command-zone">
-        <div className="nav-health">
-          <ShieldCheck size={15} />
+      <div className="top-nav-actions">
+        <div className="top-nav-health">
+          <ShieldCheck size={14} />
           <span>{readyCount}/{items.length} 在线</span>
         </div>
-        {guestMode ? (
-          <div className="guest-chip" title="游客模式不会保存历史和偏好画像">
-            <UserRound size={15} />
-            <span>游客模式</span>
-          </div>
-        ) : null}
-        <button className="secondary-action" onClick={onUserOpen} title="打开账号中心">
-          <UserRound size={16} />
-          {currentUser?.display_name || currentUser?.username || "游客"}
+
+        <button type="button" className="top-nav-user-pill" onClick={onUserOpen} title="用户中心">
+          <UserRound size={15} />
+          <span>{userName}</span>
+          {guestMode ? <em>游客</em> : null}
         </button>
+
+        <button type="button" className="top-nav-icon-action" onClick={onNewConversation} title="新对话">
+          <MessageSquarePlus size={16} />
+        </button>
+
+        <button
+          type="button"
+          className="top-nav-icon-action"
+          onClick={onHistoryOpen}
+          title={guestMode ? "登录后可查看历史" : "历史规划"}
+        >
+          <History size={16} />
+        </button>
+
+        <button type="button" className="top-nav-text-action" onClick={onAddGuide}>
+          <BookOpen size={16} />
+          <span>添加攻略</span>
+        </button>
+
         {!guestMode ? (
-          <button className="secondary-action" onClick={onLogout} title="退出登录">
+          <button type="button" className="top-nav-icon-action danger" onClick={onLogout} title="退出登录">
             <LogOut size={16} />
-            退出
           </button>
         ) : null}
-        <button className="secondary-action" onClick={onNewConversation} title="打开新对话">
-          <MessageSquarePlus size={16} />
-          新对话
-        </button>
-        <button className="secondary-action" onClick={onHistoryOpen} title="历史规划中心">
-          <History size={16} />
-          {guestMode ? "登录保存" : "历史"}
-        </button>
-        <button className="primary-action" onClick={onAddGuide} title="添加或采集攻略">
-          <BookOpen size={17} />
-          添加攻略
-        </button>
       </div>
     </header>
   );

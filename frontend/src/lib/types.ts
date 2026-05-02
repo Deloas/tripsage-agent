@@ -166,6 +166,13 @@ export interface PreferenceProfile {
   updated_at?: string | null;
 }
 
+export interface PreferenceFeedbackPayload {
+  dimension: string;
+  value: string;
+  polarity: "positive" | "negative";
+  conversation_id?: string | null;
+}
+
 export interface LocalUser {
   id: number;
   username?: string | null;

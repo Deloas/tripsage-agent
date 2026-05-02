@@ -66,6 +66,8 @@ MODULE_DEFAULT_SIGNALS = {
 SOURCE_GROUPS = {
     "user_message": "explicit",
     "profile_setting": "explicit",
+    "manual_prefer": "explicit",
+    "manual_avoid": "explicit",
     "trip_signal": "inferred",
     "destination_inferred": "inferred",
     "decision_accept": "behavior",
@@ -78,6 +80,8 @@ SOURCE_GROUPS = {
 SOURCE_WEIGHTS = {
     "user_message": 1.0,
     "profile_setting": 1.15,
+    "manual_prefer": 1.75,
+    "manual_avoid": 1.75,
     "trip_signal": 0.45,
     "destination_inferred": 0.35,
     "decision_accept": 1.1,
@@ -146,6 +150,73 @@ class PreferenceService:
         if not signals:
             return self.get_profile()
 
+        return self._persist_signals(
+            signals,
+            profile=profile,
+            conversation_id=conversation_id,
+            fallback_raw_text=message,
+        )
+
+    def apply_manual_feedback(
+        self,
+        *,
+        dimension: str,
+        value: str,
+        polarity: str,
+        conversation_id: str | None = None,
+    ) -> PreferenceProfileView:
+        """把用户在画像工作台上的人工校正沉淀为强信号。"""
+        profile = self._get_or_create(commit=False)
+        normalized_dimension = self._normalize_manual_dimension(dimension)
+        normalized_value = self._normalize_manual_value(normalized_dimension, value)
+        if not normalized_dimension or not normalized_value:
+            raise ValueError("invalid_preference_feedback")
+
+        source_type = "manual_prefer" if polarity == "positive" else "manual_avoid"
+        metadata = {"manual_feedback": True}
+        if normalized_dimension == "budget":
+            amount = self._parse_budget(normalized_value)
+            if amount is not None:
+                metadata["amount"] = amount
+                normalized_value = f"{amount}元"
+
+        signal = PreferenceSignal(
+            dimension=normalized_dimension,
+            value=normalized_value,
+            source_type=source_type,
+            polarity=polarity,
+            confidence=0.98,
+            weight=SOURCE_WEIGHTS[source_type],
+            raw_text=f"{normalized_dimension}:{normalized_value}",
+            metadata=metadata,
+        )
+        return self._persist_signals(
+            [signal],
+            profile=profile,
+            conversation_id=conversation_id,
+            fallback_raw_text=normalized_value,
+            expires_in_days=365 * 3,
+        )
+
+    def _load_events(self) -> list[TravelPreferenceEvent]:
+        return (
+            self.db.query(TravelPreferenceEvent)
+            .filter(TravelPreferenceEvent.user_key == self.user_key)
+            .order_by(TravelPreferenceEvent.created_at.desc(), TravelPreferenceEvent.id.desc())
+            .limit(MAX_EVENTS)
+            .all()
+        )
+
+    def _persist_signals(
+        self,
+        signals: list[PreferenceSignal],
+        *,
+        profile: TravelPreferenceProfile,
+        conversation_id: str | None,
+        fallback_raw_text: str,
+        expires_in_days: int = 365,
+    ) -> PreferenceProfileView:
+        """统一持久化偏好信号，并回写聚合画像快照。"""
         now = utc_now()
         for signal in signals:
             self.db.add(
@@ -159,26 +230,18 @@ class PreferenceService:
                     confidence=max(0.1, min(signal.confidence, 1.0)),
                     weight=max(0.1, signal.weight),
                     metadata_json=json.dumps(signal.metadata or {}, ensure_ascii=False),
-                    raw_text=(signal.raw_text or message)[:4000],
+                    raw_text=(signal.raw_text or fallback_raw_text)[:4000],
                     created_at=now,
-                    expires_at=now + timedelta(days=365),
+                    expires_at=now + timedelta(days=expires_in_days),
                 )
             )
 
+        self.db.flush()
         aggregated = self._build_profile(self._load_events() + self._profile_setting_events(self._load_user()))
         self._write_legacy_snapshot(profile, aggregated)
         self.db.add(profile)
         self.db.commit()
         return aggregated
-
-    def _load_events(self) -> list[TravelPreferenceEvent]:
-        return (
-            self.db.query(TravelPreferenceEvent)
-            .filter(TravelPreferenceEvent.user_key == self.user_key)
-            .order_by(TravelPreferenceEvent.created_at.desc(), TravelPreferenceEvent.id.desc())
-            .limit(MAX_EVENTS)
-            .all()
-        )
 
     def _build_profile(
         self,
@@ -240,10 +303,10 @@ class PreferenceService:
             if updated_at is None or item["created_at"] > updated_at:
                 updated_at = item["created_at"]
 
-        preferred_cities = self._top_values(positive_scores.get("destination", {}))
-        transport_modes = self._top_values(positive_scores.get("transport", {}))
-        pace_tags = self._top_values(positive_scores.get("pace", {}))
-        interest_tags = self._top_values(positive_scores.get("interest", {}))
+        preferred_cities = self._resolved_top_values("destination", positive_scores, negative_scores)
+        transport_modes = self._resolved_top_values("transport", positive_scores, negative_scores)
+        pace_tags = self._resolved_top_values("pace", positive_scores, negative_scores)
+        interest_tags = self._resolved_top_values("interest", positive_scores, negative_scores)
         negative_preferences = self._top_negative_labels(negative_scores)
         explicit_preferences = self._top_labels(explicit_scores)
         inferred_preferences = self._top_labels(inferred_scores)
@@ -725,6 +788,23 @@ class PreferenceService:
     def _top_values(self, scores: dict[str, float], limit: int = 5) -> list[str]:
         return [key for key, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)[:limit]]
 
+    def _resolved_top_values(
+        self,
+        dimension: str,
+        positive_scores: dict[str, dict[str, float]],
+        negative_scores: dict[str, dict[str, float]],
+        limit: int = 5,
+    ) -> list[str]:
+        resolved: list[tuple[str, float]] = []
+        positives = positive_scores.get(dimension, {})
+        negatives = negative_scores.get(dimension, {})
+        for value, score in positives.items():
+            negative_score = negatives.get(value, 0.0)
+            if negative_score >= score * 0.9:
+                continue
+            resolved.append((value, score - negative_score * 0.35))
+        return [value for value, _ in sorted(resolved, key=lambda item: item[1], reverse=True)[:limit]]
+
     def _top_labels(self, scores: dict[str, float], limit: int = 6) -> list[str]:
         return [key for key, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)[:limit]]
 
@@ -947,6 +1027,30 @@ class PreferenceService:
             return None
         text = str(value).replace("　", " ").strip()
         return text[:max_length] if text else None
+
+    def _normalize_manual_dimension(self, dimension: str) -> str | None:
+        mapping = {
+            "destination": "destination",
+            "city": "destination",
+            "transport": "transport",
+            "pace": "pace",
+            "interest": "interest",
+            "avoidance": "avoidance",
+            "negative_preference": "avoidance",
+            "budget": "budget",
+            "budget_style": "budget_style",
+            "behavior": "behavior",
+            "risk": "risk",
+        }
+        return mapping.get(str(dimension or "").strip().lower())
+
+    def _normalize_manual_value(self, dimension: str, value: str) -> str | None:
+        cleaned = self._clean_text(value, 120)
+        if not cleaned:
+            return None
+        if dimension == "avoidance" and cleaned.startswith("避免"):
+            cleaned = cleaned[2:].strip() or cleaned
+        return cleaned
 
     def _ensure_utc(self, value: datetime) -> datetime:
         return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)

@@ -1,25 +1,27 @@
 # 图片资产目录
 
-中国旅行主题图片放在这里，前端会从 `/assets/` 路径读取。
+本目录存放前端页面使用的中国旅行主题图片，统一通过 `/assets/` 路径读取。
 
-当前已内置两张本地生成的 PNG 资产，保证项目离线运行时也有完整视觉：
+当前主要资产：
 
-- `china-jiangnan-lane.png`：江南街巷与水乡旅行氛围图。
-- `china-rail-window.png`：中国高铁车窗与沿线风景氛围图。
+- `china-jiangnan-lane.png`
+  - 早期江南水乡氛围图
+- `china-rail-window.png`
+  - 早期高铁窗景氛围图
+- `china-overview-atlas-v2.png`
+  - 总览页新版首屏图，突出多城市旅行决策与产品高级感
+- `china-rail-window-v2.png`
+  - 铁路页新版首屏图，突出中国高铁出行与铁路比选
+- `china-memory-notebook-v2.png`
+  - 画像/记忆页新版首屏图，突出旅行档案、偏好沉淀与长期记忆
 
-后续如果使用 `imagegen` 生成更高真实感图片，也建议继续放在本目录。
+使用约束：
 
-建议文件名：
+- 图片背景必须基于中国旅行场景
+- 不包含水印、Logo、可识别真人面部和界面文字
+- 图片只用于产品视觉表达，不作为事实依据
 
-- `china-jiangnan-lane-v2.jpg`
-- `china-rail-window-v2.jpg`
-- `rainy-suzhou-street.jpg`
-- `china-map-planning.jpg`
-- `southwest-city-travel.jpg`
+维护建议：
 
-要求：
-
-- 图片背景必须基于中国旅行场景。
-- 不包含文字、水印、Logo。
-- 不包含可识别真实人物。
-- 用于前端氛围和功能语义，不作为事实依据。
+- 如需继续用 `imagegen` 生成新图，优先保留旧版本，不直接覆盖
+- 建议采用 `*-v2.png`、`*-v3.png` 这样的版本命名，方便回退和对比
