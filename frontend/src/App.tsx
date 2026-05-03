@@ -58,6 +58,7 @@ import type {
   GuestCarryoverSummary,
   GuestSessionImportPayload,
   GuideSourceItem,
+  GuideDetail,
   LocalUser,
   PlanVersion,
   PlanVersionCompare,
@@ -73,6 +74,7 @@ import { AddGuideModal } from "./components/AddGuideModal";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { HistoryCenter } from "./components/HistoryCenter";
 import { InsightPanel } from "./components/InsightPanel";
+import { KnowledgeBaseWorkbench } from "./components/KnowledgeBaseWorkbench";
 import { PlannerSidebar } from "./components/PlannerSidebar";
 import { PreferenceProfileWorkbench } from "./components/PreferenceProfileWorkbench";
 import { SharedPlanPage } from "./components/SharedPlanPage";
@@ -608,6 +610,21 @@ export default function App() {
     void handlePrompt(prompt, { edited_plan: editedPlan });
   }
 
+  function handleUseGuideInPlanning(guide: GuideDetail) {
+    setWorkspaceView("planning");
+    void recordPreferenceBehavior({
+      action: "continue_optimize",
+      payload: {
+        title: `加入攻略：${guide.title}`,
+        summary: guide.summary,
+        destination_city: guide.city,
+      },
+    }).catch(() => undefined);
+    void handlePrompt(buildGuideAdoptionPrompt(guide), {
+      selected_guides: [toSelectedGuideContext(guide)],
+    });
+  }
+
   function registerPlanVersion(response: ChatResponse, context: Record<string, unknown>) {
     // 每次智能体产出都保留为一个版本，方便用户在“原始方案”和“二次优化方案”之间切换回看。
     const versionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -972,8 +989,13 @@ export default function App() {
             latest={latest}
             guideSources={guideSources}
             searchMode={searchMode}
+            guideResult={guideResult}
+            crawlLoading={crawlLoading}
             onSearchModeChange={setSearchMode}
+            onAddGuide={() => setModalOpen(true)}
+            onCrawlWeibo={handleCrawlWeibo}
             onPrompt={(prompt) => void handlePrompt(prompt)}
+            onUseGuide={handleUseGuideInPlanning}
           />
         ) : null}
 
@@ -2053,14 +2075,24 @@ function EvidenceWorkbench({
   latest,
   guideSources,
   searchMode,
+  guideResult,
+  crawlLoading,
   onSearchModeChange,
+  onAddGuide,
+  onCrawlWeibo,
   onPrompt,
+  onUseGuide,
 }: {
   latest: ChatResponse | null;
   guideSources: GuideSourceItem[];
   searchMode: SearchMode;
+  guideResult: string | null;
+  crawlLoading: boolean;
   onSearchModeChange: (mode: SearchMode) => void;
+  onAddGuide: () => void;
+  onCrawlWeibo: () => void;
   onPrompt: (prompt: string) => void;
+  onUseGuide: (guide: GuideDetail) => void;
 }) {
   const modeLabel =
     searchMode === "auto" ? "自动检索" : searchMode === "local_only" ? "仅攻略库" : "联网增强";
@@ -2093,6 +2125,15 @@ function EvidenceWorkbench({
           <SignalCard icon={<Activity size={16} />} label="工具调用" value={`${toolCalls.length}`} />
         </div>
       </section>
+
+      <KnowledgeBaseWorkbench
+        guideSources={guideSources}
+        guideResult={guideResult}
+        crawlLoading={crawlLoading}
+        onAddGuide={onAddGuide}
+        onCrawlWeibo={onCrawlWeibo}
+        onUseGuide={onUseGuide}
+      />
 
       <div className="evidence-grid">
         <section className="page-band evidence-left-stack">
@@ -2770,6 +2811,49 @@ function buildAppRailwayWorkspacePrompt(draft: RailwayWorkspaceDraft) {
       : "当前没有候选方案池车次。",
     "请结合景点顺序、城市内交通衔接、预算和行程强度，给出主推荐铁路方案，并保留必要备选。",
   ].join("\n");
+}
+
+function toSelectedGuideContext(guide: GuideDetail) {
+  return {
+    id: guide.id,
+    title: guide.title,
+    city: guide.city,
+    summary: guide.summary,
+    days: guide.days ?? null,
+    source_url: guide.source_url || null,
+    source_type: guide.source_type || null,
+    category: guide.category || null,
+    structured: guide.structured || null,
+  };
+}
+
+function buildGuideAdoptionPrompt(guide: GuideDetail) {
+  const structured = guide.structured;
+  const scenic = structured?.scenic_spots?.slice(0, 6).join("、");
+  const food = structured?.food_spots?.slice(0, 6).join("、");
+  const transport = structured?.transport_modes?.join("、");
+  const lodging = structured?.lodging_suggestions?.slice(0, 4).join("、");
+  const style = structured?.travel_style_tags?.join("、");
+  const budget = structured?.budget_range
+    || (guide.budget_min != null && guide.budget_max != null
+      ? `${guide.budget_min}-${guide.budget_max}元`
+      : guide.budget_min != null
+        ? `约${guide.budget_min}元`
+        : "");
+
+  return [
+    `请把《${guide.title}》加入当前规划继续优化。`,
+    `目的地：${guide.city}。`,
+    guide.days ? `建议天数：${guide.days}天。` : "",
+    budget ? `预算线索：${budget}。` : "",
+    transport ? `交通线索：${transport}。` : "",
+    lodging ? `住宿线索：${lodging}。` : "",
+    style ? `玩法风格：${style}。` : "",
+    scenic ? `优先吸收的景点：${scenic}。` : "",
+    food ? `可参考的美食：${food}。` : "",
+    guide.summary ? `攻略摘要：${guide.summary}` : "",
+    "请结合当前对话中已有的出发地、日期、预算、天气、铁路和地图结果，输出新的可执行方案。",
+  ].filter(Boolean).join("\n");
 }
 
 function buildAppDecisionModuleKey(module: DecisionModule) {

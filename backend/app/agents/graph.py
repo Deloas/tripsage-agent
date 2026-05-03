@@ -152,8 +152,11 @@ class TripAgent:
         """生成供前端直接渲染的阶段摘要。"""
         summaries = {
             "intent_slot": f"识别为 {state.get('intent', 'general_qa')}。",
-            "retrieval": f"命中 {len(state.get('retrieved_guides', []))} 条本地攻略片段。",
-            "web_search": f"联网补充 {len(state.get('web_items', []))} 条来源。",
+            "retrieval": (
+                f"命中 {len(state.get('retrieved_guides', []))} 条本地攻略片段，"
+                f"覆盖分 {((state.get('guide_coverage') or {}).get('coverage_score', 0))}。"
+            ),
+            "web_search": state.get("web_search_reason") or f"联网补充 {len(state.get('web_items', []))} 条来源。",
             "weather": "天气查询完成。" if state.get("weather_result") else "本轮无需天气查询。",
             "railway": (
                 f"铁路返回 {len((state.get('railway_result') or {}).get('trains', []))} 条车次。"

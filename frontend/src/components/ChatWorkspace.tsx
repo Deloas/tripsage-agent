@@ -27,7 +27,7 @@ import {
   TrainFront,
   WandSparkles,
 } from "lucide-react";
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, forwardRef, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   ChatResponse,
@@ -215,6 +215,7 @@ export function ChatWorkspace({
 
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const dispatchRailRef = useRef<HTMLElement | null>(null);
 
   const cards = latest?.cards || [];
   const activeVersion = planVersions.find((item) => item.id === activeVersionId) || null;
@@ -262,7 +263,8 @@ export function ChatWorkspace({
   function focusComposer() {
     setPrimaryTab("messages");
     window.requestAnimationFrame(() => {
-      composerTextareaRef.current?.focus();
+      // 聚焦输入框时禁止页面整体跳滚，避免把上方调度区挤出视口。
+      composerTextareaRef.current?.focus({ preventScroll: true });
     });
   }
 
@@ -275,11 +277,19 @@ export function ChatWorkspace({
     });
   }
 
+  function scrollToDispatch() {
+    setPrimaryTab("messages");
+    window.requestAnimationFrame(() => {
+      dispatchRailRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
+
   function primePrompt(prompt: string) {
     setPrimaryTab("messages");
     setValue(prompt);
     window.requestAnimationFrame(() => {
-      composerTextareaRef.current?.focus();
+      // 预填提示词时同样保持页面稳定，只更新输入焦点与光标位置。
+      composerTextareaRef.current?.focus({ preventScroll: true });
       composerTextareaRef.current?.setSelectionRange(prompt.length, prompt.length);
     });
   }
@@ -316,7 +326,10 @@ export function ChatWorkspace({
   }, [planVersions.length, railwayCard]);
 
   return (
-    <main className="planner-workstation" aria-label="旅行规划主工作台">
+    <main
+      className={`planner-workstation ${primaryTab === "messages" ? "is-message-focus" : ""}`}
+      aria-label="旅行规划主工作台"
+    >
       <section className="planner-workstation-bar">
         <div className="planner-bar-copy">
           <div className="section-kicker">
@@ -368,7 +381,10 @@ export function ChatWorkspace({
       </section>
 
       <section className="planner-workstation-grid">
-        <section className="planner-primary-surface" aria-label="核心决策区">
+        <section
+          className={`planner-primary-surface ${primaryTab === "messages" ? "is-message-focus" : ""}`}
+          aria-label="核心决策区"
+        >
           <header className="planner-surface-head">
             <div>
               <div className="section-kicker">
@@ -414,7 +430,7 @@ export function ChatWorkspace({
             </div>
           </header>
 
-          <DispatchRail stages={streamStages} loading={loading} />
+          <DispatchRail ref={dispatchRailRef} stages={streamStages} loading={loading} />
 
           {latest?.warnings?.length ? (
             <section className="planner-warning-strip" aria-label="风险提醒">
@@ -429,7 +445,7 @@ export function ChatWorkspace({
 
           <div className="planner-primary-content">
             {primaryTab === "messages" ? (
-              <div className="planner-message-surface">
+              <div className="planner-message-surface featured">
                 <div className="planner-message-head">
                   <div>
                     <strong>会话记录</strong>
@@ -455,6 +471,44 @@ export function ChatWorkspace({
                         <div className="planner-message-role">TripSage</div>
                         <p>正在调度攻略库、铁路、天气和地图工具，请稍候...</p>
                       </article>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="planner-message-footer">
+                  <form className="planner-composer-shell message-embedded" onSubmit={handleSubmit}>
+                    <div className="planner-composer-meta">
+                      <div>
+                        <span>规划输入</span>
+                        <strong>{guestMode ? "游客会话" : "已连接长期记忆"}</strong>
+                      </div>
+                      <em>Ctrl + Enter 发送</em>
+                    </div>
+                    <div className="planner-composer">
+                      <textarea
+                        ref={composerTextareaRef}
+                        value={value}
+                        onChange={(event) => setValue(event.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="例如：杭州出发，五一去南京两天一夜，优先高铁，预算 1800 元，请给我可执行方案。"
+                        rows={3}
+                      />
+                      <button type="submit" aria-label="发送问题" disabled={loading || !value.trim()} title="发送">
+                        <SendHorizonal size={18} />
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="planner-message-float-stack" aria-label="会话快捷操作">
+                    <button type="button" className="planner-float-button" onClick={scrollToDispatch}>
+                      <Clock3 size={15} />
+                      调度
+                    </button>
+                    {showJumpToLatest ? (
+                      <button type="button" className="planner-float-button strong" onClick={scrollToLatest}>
+                        <ChevronDown size={15} />
+                        最新
+                      </button>
                     ) : null}
                   </div>
                 </div>
@@ -495,7 +549,10 @@ export function ChatWorkspace({
             ) : null}
           </div>
 
-          <form className="planner-composer-shell" onSubmit={handleSubmit}>
+          <form
+            className={`planner-composer-shell ${primaryTab === "messages" ? "message-mode is-hidden" : ""}`}
+            onSubmit={handleSubmit}
+          >
             <div className="planner-composer-meta">
               <div>
                 <span>规划输入</span>
@@ -616,13 +673,16 @@ function PlannerStatusChip({
   );
 }
 
-function DispatchRail({ stages, loading }: { stages: StreamStage[]; loading: boolean }) {
+const DispatchRail = forwardRef<HTMLElement, { stages: StreamStage[]; loading: boolean }>(function DispatchRail(
+  { stages, loading },
+  ref,
+) {
   const displayStages = stages.length
     ? stages.slice(-4)
     : [{ name: "idle", label: "待处理", status: "done" as const, summary: "等待输入" }];
 
   return (
-    <section className="planner-dispatch-rail" aria-label="实时调度">
+    <section ref={ref} className="planner-dispatch-rail" aria-label="实时调度">
       <div className="planner-dispatch-title">
         <Clock3 size={15} />
         <strong>实时调度</strong>
@@ -638,7 +698,7 @@ function DispatchRail({ stages, loading }: { stages: StreamStage[]; loading: boo
       </div>
     </section>
   );
-}
+});
 
 function SecondaryStat({
   icon: Icon,

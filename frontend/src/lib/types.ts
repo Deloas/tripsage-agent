@@ -414,6 +414,71 @@ export interface GuideItem {
   crawl_status?: string;
 }
 
+export interface GuideFacetOption {
+  value: string;
+  label: string;
+  count: number;
+}
+
+export interface GuideLibraryResult {
+  items: GuideItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  sort_by?: string;
+  filters: {
+    source_types: GuideFacetOption[];
+    cities: GuideFacetOption[];
+    categories: GuideFacetOption[];
+  };
+}
+
+export interface GuideDetail {
+  id: number;
+  title: string;
+  city: string;
+  summary: string;
+  days?: number | null;
+  budget_min?: number | null;
+  budget_max?: number | null;
+  travel_style?: string | null;
+  source_url?: string;
+  source_type?: string;
+  category?: string;
+  crawl_status?: string;
+  content: string;
+  created_at?: string | null;
+  chunk_count: number;
+  structured?: {
+    city?: string;
+    days?: number | null;
+    summary?: string;
+    budget_min?: number | null;
+    budget_max?: number | null;
+    budget_range?: string | null;
+    transport_modes?: string[];
+    lodging_suggestions?: string[];
+    travel_style_tags?: string[];
+    scenic_spots?: string[];
+    food_spots?: string[];
+    places?: Array<{
+      name: string;
+      type?: string | null;
+    }>;
+  } | null;
+  chunks: Array<{
+    id: string;
+    chunk_index: number;
+    content: string;
+  }>;
+  places: Array<{
+    name: string;
+    city: string;
+    place_type?: string | null;
+    address?: string | null;
+  }>;
+}
+
 export interface GuideSourceItem {
   id: number;
   title: string;

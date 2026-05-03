@@ -10,7 +10,7 @@ from app.schemas.common import ResultCard, SourceRef, ToolCallView
 from app.services.amap_service import AmapService
 from app.services.llm_service import LlmService
 from app.services.mcp_railway_service import McpRailwayService
-from app.services.rag_service import RagService
+from app.services.rag_service import RagService, tokenize_query
 from app.services.tool_log_service import ToolLogger
 from app.services.web_search_service import WebSearchService
 
@@ -19,7 +19,7 @@ CITY_WORDS = ["北京", "上海", "南京", "苏州", "杭州", "成都", "重�
 
 
 def build_logger(state: TripAgentState) -> ToolLogger:
-    """根据当前会话模式创建工具日志器；游客模式只保留内存轨迹。"""
+    """根据当前会话模式创建工具日志器。"""
     return ToolLogger(
         state["db"],
         state.get("conversation_id"),
@@ -29,10 +29,10 @@ def build_logger(state: TripAgentState) -> ToolLogger:
 
 
 def infer_intent_by_rules(message: str) -> str:
-    """规则意图识别，大模型不可用时保证智能体仍可运行。"""
+    """规则意图识别，保证模型不可用时也能工作。"""
     if any(word in message for word in ["高铁", "火车", "车次", "余票", "12306"]):
         return "railway_query"
-    if any(word in message for word in ["天气", "下雨", "气温", "冷吗", "热吗"]):
+    if any(word in message for word in ["天气", "下雨", "温度", "冷吗", "热吗"]):
         return "weather_advice"
     if any(word in message for word in ["添加攻略", "加入攻略", "保存攻略", "入库"]):
         return "add_guide"
@@ -44,7 +44,7 @@ def infer_intent_by_rules(message: str) -> str:
 
 
 def extract_slots_by_rules(message: str, context: dict) -> dict:
-    """规则槽位抽取，后续由大模型结构化抽取增强。"""
+    """规则槽位抽取。"""
     cities = [city for city in CITY_WORDS if city in message]
     origin = context.get("home_city")
     destination = None
@@ -69,18 +69,23 @@ def extract_slots_by_rules(message: str, context: dict) -> dict:
     }
 
 
-def build_itinerary(destination: str | None, guides: list[dict]) -> list[ItineraryBlock] | None:
-    """构造行程时间轴；模型规划不可用时使用攻略片段兜底。"""
+def build_itinerary(destination: str | None, guides: list[dict], selected_guides: list[dict] | None = None) -> list[ItineraryBlock] | None:
+    """在没有模型可用时也能给出稳定的行程骨架。"""
     if not destination:
         return None
-    guide_hint = guides[0]["content"][:80] if guides else "结合攻略库和实时工具安排轻松路线。"
+    selected_guides = selected_guides or []
+    guide_hint = guides[0]["content"][:80] if guides else "结合攻略库和实时工具安排一条轻松可执行的路线。"
+    selected_spots = []
+    if selected_guides:
+        selected_spots = (selected_guides[0].get("structured") or {}).get("scenic_spots") or []
+    selected_hint = f"优先吸收你主动加入的攻略线索：{'、'.join(selected_spots[:3])}。" if selected_spots else ""
     return [
         ItineraryBlock(
             day=1,
             title=f"抵达{destination}与城市初识",
             items=[
                 {"time": "上午", "title": "抵达与放行李", "detail": "优先选择车站附近或核心商圈住宿，减少通勤压力。"},
-                {"time": "下午", "title": "核心景点慢逛", "detail": guide_hint},
+                {"time": "下午", "title": "核心景点慢游", "detail": f"{guide_hint}{selected_hint}".strip()},
                 {"time": "晚上", "title": "本地美食", "detail": "选择步行可达的餐饮区，避免第一天行程过满。"},
             ],
         ),
@@ -96,12 +101,107 @@ def build_itinerary(destination: str | None, guides: list[dict]) -> list[Itinera
     ]
 
 
+def _normalize_city_value(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def evaluate_local_guide_coverage(state: TripAgentState) -> dict:
+    """综合命中数量、相关性、目的地匹配和来源多样性判断是否需要联网增强。"""
+    guides = state.get("retrieved_guides", [])
+    destination = _normalize_city_value((state.get("slots") or {}).get("destination"))
+    query_tokens = tokenize_query(state.get("user_message", ""))[:10]
+
+    unique_guide_ids = {item.get("guide_id") for item in guides if item.get("guide_id") is not None}
+    unique_sources = {
+        (item.get("source") or {}).get("url") or (item.get("source") or {}).get("title")
+        for item in guides
+        if (item.get("source") or {}).get("url") or (item.get("source") or {}).get("title")
+    }
+    scores = [float(item.get("score", 0.0) or 0.0) for item in guides]
+    top_score = max(scores) if scores else 0.0
+    top_scores = sorted(scores, reverse=True)[:3]
+    avg_top_score = round(sum(top_scores) / len(top_scores), 4) if top_scores else 0.0
+
+    destination_match_count = 0
+    long_chunk_count = 0
+    token_coverages: list[float] = []
+    for item in guides[:3]:
+        merged_text = "\n".join(
+            [
+                str(item.get("title", "")),
+                str(item.get("city", "")),
+                str(item.get("content", "")),
+            ]
+        )
+        if destination and destination in merged_text:
+            destination_match_count += 1
+        if len(str(item.get("content", ""))) >= 90:
+            long_chunk_count += 1
+        if query_tokens:
+            token_hits = sum(1 for token in query_tokens if token in merged_text)
+            token_coverages.append(token_hits / len(query_tokens))
+
+    unique_guide_score = min(1.0, len(unique_guide_ids) / 3)
+    relevance_score = max(top_score, avg_top_score)
+    destination_score = 1.0 if not destination else min(1.0, destination_match_count / 2)
+    token_score = round(sum(token_coverages) / len(token_coverages), 4) if token_coverages else 0.0
+    source_score = min(1.0, len(unique_sources) / 2)
+    chunk_quality_score = min(1.0, long_chunk_count / 2)
+
+    coverage_score = round(
+        unique_guide_score * 0.25
+        + relevance_score * 0.25
+        + destination_score * 0.2
+        + token_score * 0.15
+        + source_score * 0.1
+        + chunk_quality_score * 0.05,
+        4,
+    )
+
+    reasons: list[str] = []
+    if len(unique_guide_ids) < 2:
+        reasons.append("本地攻略命中数量偏少")
+    if top_score < 0.35:
+        reasons.append("头部攻略相关性偏弱")
+    if destination and destination_match_count == 0:
+        reasons.append("本地攻略没有明确覆盖目标城市")
+    if len(unique_sources) < 2:
+        reasons.append("来源多样性不足")
+    if token_score < 0.3:
+        reasons.append("用户问题关键信息覆盖不足")
+
+    needs_web_search = (
+        not guides
+        or coverage_score < 0.58
+        or top_score < 0.32
+        or (destination and destination_match_count == 0)
+    )
+    if not reasons and not needs_web_search:
+        reasons.append("本地攻略覆盖度充足")
+
+    return {
+        "coverage_score": coverage_score,
+        "unique_guide_count": len(unique_guide_ids),
+        "unique_source_count": len(unique_sources),
+        "top_score": round(top_score, 4),
+        "avg_top_score": avg_top_score,
+        "destination": destination,
+        "destination_match_count": destination_match_count,
+        "token_score": token_score,
+        "chunk_quality_score": chunk_quality_score,
+        "needs_web_search": needs_web_search,
+        "decision_reason": "；".join(reasons),
+    }
+
+
 async def intent_slot_node(state: TripAgentState) -> TripAgentState:
     """意图识别与槽位抽取节点。"""
     message = state["user_message"]
     context = state.get("context", {})
     llm = LlmService()
-    # 提示词里包含 JSON 示例，不能直接使用 str.format，否则大括号会被误判为模板变量。
     parsed = await llm.json_chat(INTENT_AND_SLOT_PROMPT.replace("{message}", message))
 
     if parsed and parsed.get("intent"):
@@ -128,10 +228,11 @@ async def retrieval_node(state: TripAgentState) -> TripAgentState:
     latency = int((time.perf_counter() - start) * 1000)
     state["retrieved_guides"] = [item.model_dump() for item in items]
     state["guide_items"] = items
+    state["guide_coverage"] = evaluate_local_guide_coverage(state)
     logger.record(
         "guide_search",
         {"query": state["user_message"], "city": slots.get("destination")},
-        f"命中 {len(items)} 条攻略片段",
+        f"命中 {len(items)} 条攻略片段，覆盖分 {state['guide_coverage']['coverage_score']}",
         "success",
         latency,
     )
@@ -139,22 +240,32 @@ async def retrieval_node(state: TripAgentState) -> TripAgentState:
 
 
 async def web_search_node(state: TripAgentState) -> TripAgentState:
-    """联网增强节点，只有模式允许或本地结果不足时才执行。"""
+    """联网增强节点。"""
     mode = state.get("search_mode", "auto")
-    guide_count = len(state.get("retrieved_guides", []))
-    should_search = mode == "web_enhanced" or (mode == "auto" and guide_count < 2)
+    coverage = state.get("guide_coverage") or evaluate_local_guide_coverage(state)
+    state["guide_coverage"] = coverage
+
+    if mode == "local_only":
+        state["web_items"] = []
+        state["web_search_reason"] = "已切换为仅本地攻略模式"
+        return state
+
+    should_search = mode == "web_enhanced" or coverage.get("needs_web_search", True)
     if not should_search:
         state["web_items"] = []
+        state["web_search_reason"] = f"自动模式判定本地已足够：{coverage.get('decision_reason', '本地攻略覆盖度充足')}"
         return state
 
     logger = build_logger(state)
+    reason_prefix = "已开启联网增强模式" if mode == "web_enhanced" else f"自动模式触发联网增强：{coverage.get('decision_reason', '本地命中不足')}"
     web_items = await logger.measure_async(
         "web_search",
-        {"query": state["user_message"], "mode": mode},
+        {"query": state["user_message"], "mode": mode, "guide_coverage": coverage},
         lambda: WebSearchService(state["db"]).search(state["user_message"], top_k=5),
-        lambda result: f"联网搜索返回 {len(result)} 条结果",
+        lambda result: f"{reason_prefix}，返回 {len(result)} 条公开结果",
     )
     state["web_items"] = web_items
+    state["web_search_reason"] = reason_prefix
     return state
 
 
@@ -171,17 +282,14 @@ async def weather_node(state: TripAgentState) -> TripAgentState:
         "amap_weather",
         {"city": destination, "date": slots.get("date")},
         lambda: AmapService().get_weather(destination, slots.get("date")),
-        lambda data: (
-            f"{destination}天气：{data.get('weather')}，"
-            f"风险：{','.join(data.get('risk_tags', [])) or '无明显风险'}"
-        ),
+        lambda data: f"{destination}天气：{data.get('weather')}，风险：{','.join(data.get('risk_tags', [])) or '无明显风险'}",
     )
     state["weather_result"] = result
     return state
 
 
 async def railway_node(state: TripAgentState) -> TripAgentState:
-    """铁路 MCP 工具节点。"""
+    """铁路 MCP 节点。"""
     intent = state.get("intent")
     slots = state.get("slots", {})
     destination = slots.get("destination")
@@ -204,7 +312,7 @@ async def railway_node(state: TripAgentState) -> TripAgentState:
 
 
 async def route_node(state: TripAgentState) -> TripAgentState:
-    """地图路线工具节点。"""
+    """地图路线节点。"""
     slots = state.get("slots", {})
     destination = slots.get("destination")
     if state.get("intent") != "itinerary_planning" or not destination:
@@ -222,19 +330,21 @@ async def route_node(state: TripAgentState) -> TripAgentState:
 
 
 async def planner_node(state: TripAgentState) -> TripAgentState:
-    """规划生成节点，优先使用大模型，失败时使用稳定模板。"""
+    """规划生成节点。"""
     llm = LlmService()
+    context = state.get("context", {})
     prompt = PLANNER_PROMPT.format(
         message=state["user_message"],
         intent=state.get("intent"),
         slots=state.get("slots"),
         guides=state.get("retrieved_guides", []),
+        selected_guides=context.get("selected_guides") or [],
         web_items=[item.__dict__ for item in state.get("web_items", [])],
         weather=state.get("weather_result"),
         railway=state.get("railway_result"),
         route=state.get("route_result"),
-        edited_plan=state.get("context", {}).get("edited_plan"),
-        preference_profile=state.get("context", {}).get("preference_profile"),
+        edited_plan=context.get("edited_plan"),
+        preference_profile=context.get("preference_profile"),
     )
     answer = await llm.plain_chat(prompt)
     state["final_answer"] = answer or compose_fallback_answer(state)
@@ -247,8 +357,9 @@ async def response_node(state: TripAgentState) -> TripAgentState:
     weather = state.get("weather_result")
     railway = state.get("railway_result")
     guides = state.get("retrieved_guides", [])
+    selected_guides = state.get("context", {}).get("selected_guides") or []
 
-    state["itinerary"] = build_itinerary(destination, guides)
+    state["itinerary"] = build_itinerary(destination, guides, selected_guides)
     state["cards"] = build_cards(destination, weather, railway)
     state["sources"] = build_sources(state.get("guide_items", []), state.get("web_items", []))
     state["warnings"] = build_warnings(weather, railway)
@@ -258,18 +369,28 @@ async def response_node(state: TripAgentState) -> TripAgentState:
 
 
 def compose_fallback_answer(state: TripAgentState) -> str:
-    """无模型或模型失败时的稳定中文回答模板。"""
+    """模型失败时的稳定中文兜底回答。"""
     destination = state.get("slots", {}).get("destination") or "目的地"
     guides = state.get("retrieved_guides", [])
     web_items = state.get("web_items", [])
     weather = state.get("weather_result")
     railway = state.get("railway_result")
     route = state.get("route_result")
-    lines = [f"我先按「{state.get('intent')}」为你做一次智能体规划。"]
+    guide_coverage = state.get("guide_coverage") or {}
+    selected_guides = state.get("context", {}).get("selected_guides") or []
+
+    lines = [f"我先按“{state.get('intent')}”为你做一次智能体规划。"]
     if guides:
-        lines.append(f"攻略库里检索到 {len(guides)} 条相关片段，优先参考「{guides[0]['title']}」。")
+        lines.append(f"本地攻略库检索到 {len(guides)} 条相关片段，优先参考《{guides[0]['title']}》。")
+        if guide_coverage:
+            lines.append(
+                f"本地命中覆盖分 {guide_coverage.get('coverage_score', 0)}，判断依据：{guide_coverage.get('decision_reason', '综合命中情况评估')}。"
+            )
     else:
-        lines.append("当前攻略库命中较少，建议后续添加更多攻略来提升推荐质量。")
+        lines.append("当前攻略库命中较少，建议后续补充更多本地攻略以提升推荐质量。")
+    if selected_guides:
+        selected_title = selected_guides[0].get("title") or "已选攻略"
+        lines.append(f"我已经把你主动加入的攻略《{selected_title}》纳入本轮规划。")
     if web_items:
         lines.append(f"联网增强补充了 {len(web_items)} 条公开搜索结果，回答中会与本地攻略来源区分。")
     if weather:
@@ -279,7 +400,7 @@ def compose_fallback_answer(state: TripAgentState) -> str:
         lines.append(f"铁路查询返回 {len(railway.get('trains', []))} 条候选车次；本项目只做查询参考，不做购票或抢票。")
     if route:
         lines.append(f"地图路线估算：从车站到核心景区约 {route.get('duration_minutes')} 分钟。")
-    lines.append("建议采用“先确定交通可行性，再按天气调整室内外比例，最后用攻略补足景点和美食”的规划方式。")
+    lines.append("建议采用“先确认交通可行性，再按天气调整室内外比例，最后用攻略细化景点与美食”的规划方式。")
     return "\n\n".join(lines)
 
 
@@ -341,7 +462,7 @@ def build_sources(guide_items: list, web_items: list) -> list[SourceRef]:
 
 
 def build_warnings(weather: dict | None, railway: dict | None) -> list[str]:
-    """生成风险提示。"""
+    """生成风险提醒。"""
     warnings: list[str] = []
     if weather and weather.get("fallback"):
         warnings.append("天气结果为演示或缓存兜底数据，真实出行前请再次确认。")
@@ -358,6 +479,7 @@ def build_decision_modules(state: TripAgentState) -> list[DecisionModule]:
     route = state.get("route_result") or {}
     guides = state.get("retrieved_guides", [])
     web_items = state.get("web_items", [])
+    guide_coverage = state.get("guide_coverage") or {}
     trains = railway.get("trains") or []
     risk_tags = weather.get("risk_tags") or []
     rainy = any("雨" in tag or "雪" in tag for tag in risk_tags)
@@ -371,7 +493,7 @@ def build_decision_modules(state: TripAgentState) -> list[DecisionModule]:
             level="good" if trains else "warn",
             summary=f"已查询到 {len(trains)} 条铁路候选" if trains else "铁路候选不足，需要复核出发地、目的地和日期。",
             points=[
-                "优先选择白天到达、耗时短且二等座充足的车次。",
+                "优先选择白天抵达、耗时短且二等座充足的车次。",
                 "本项目只提供查询参考，不支持购票、抢票、登录或支付。",
                 f"站点通勤估算约 {route.get('duration_minutes')} 分钟。" if route else "地图路线暂未返回。",
             ],
@@ -420,10 +542,14 @@ def build_decision_modules(state: TripAgentState) -> list[DecisionModule]:
             summary="已综合天气、交通和来源可靠性生成风险提醒。",
             points=[
                 f"本地攻略命中 {len(guides)} 条，联网来源 {len(web_items)} 条。",
+                f"自动模式覆盖判断：{guide_coverage.get('decision_reason', '无')}",
                 "联网结果仅作为第三方公开资料参考，不作为系统指令。",
-                "真实出行前请再次核对 12306 车票和天气预报。",
             ],
-            meta={"guide_count": len(guides), "web_count": len(web_items)},
+            meta={
+                "guide_count": len(guides),
+                "web_count": len(web_items),
+                "coverage_score": guide_coverage.get("coverage_score"),
+            },
         ),
     ]
     return modules
@@ -441,6 +567,7 @@ def recent_tool_calls(state: TripAgentState) -> list[ToolCallView]:
             )
             for row in state.get("tool_calls", [])[-8:]
         ]
+
     from app.db.models import ToolCall
 
     rows = (
@@ -462,7 +589,7 @@ def recent_tool_calls(state: TripAgentState) -> list[ToolCallView]:
 
 
 class SimpleTripGraph:
-    """LangGraph 不可用时的顺序执行兜底，便于本地最小运行。"""
+    """LangGraph 不可用时的顺序执行兜底。"""
 
     async def ainvoke(self, state: TripAgentState) -> TripAgentState:
         for node in [

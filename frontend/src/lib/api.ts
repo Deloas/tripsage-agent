@@ -11,7 +11,9 @@ import type {
   ConversationUpdatePayload,
   GuestSessionImportPayload,
   GuestSessionImportResult,
+  GuideDetail,
   GuideItem,
+  GuideLibraryResult,
   GuideSourceItem,
   LocalUser,
   PlanExportResult,
@@ -324,10 +326,33 @@ export async function fetchGuides(): Promise<GuideItem[]> {
   ).then((data) => data.items);
 }
 
+export async function fetchGuideLibrary(params?: {
+  keyword?: string;
+  city?: string;
+  category?: string;
+  source_type?: string;
+  sort_by?: "latest" | "oldest" | "city_hot" | "source_priority";
+  limit?: number;
+  offset?: number;
+}): Promise<GuideLibraryResult> {
+  return unwrapRaw(
+    api.get<ApiResponse<GuideLibraryResult>>("/guides", {
+      params,
+    }),
+  );
+}
+
+export async function fetchGuideDetail(guideId: number): Promise<GuideDetail> {
+  return unwrapRaw(api.get<ApiResponse<GuideDetail>>(`/guides/${guideId}`));
+}
+
 export async function fetchGuideSources(status?: string): Promise<GuideSourceItem[]> {
   return unwrapRaw(
     api.get<ApiResponse<{ items: GuideSourceItem[]; total: number }>>("/guides/sources", {
-      params: status ? { status } : undefined,
+      params: {
+        limit: 500,
+        ...(status ? { status } : {}),
+      },
     }),
   ).then((data) => data.items);
 }

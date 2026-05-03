@@ -2,7 +2,7 @@ from typing import TypedDict
 
 
 class TripAgentState(TypedDict, total=False):
-    """LangGraph 状态草案；当前骨架服务也沿用这组字段。"""
+    """LangGraph 状态草案，同时供顺序兜底执行链复用。"""
 
     conversation_id: str
     user_message: str
@@ -16,6 +16,8 @@ class TripAgentState(TypedDict, total=False):
     missing_slots: list[str]
     retrieved_guides: list[dict]
     guide_items: list
+    guide_coverage: dict
+    web_search_reason: str
     web_items: list
     railway_results: list[dict]
     railway_result: dict

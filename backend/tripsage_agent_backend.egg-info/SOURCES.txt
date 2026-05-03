@@ -33,13 +33,16 @@ app/schemas/workspace.py
 app/scripts/__init__.py
 app/scripts/check_amap.py
 app/scripts/check_deepseek.py
+app/scripts/check_delivery.py
 app/scripts/check_railway_mcp.py
 app/scripts/check_web_search.py
 app/scripts/crawl_weibo_guides.py
+app/scripts/import_weibo_rendered_guides.py
 app/scripts/init_db.py
 app/scripts/rebuild_vector_index.py
 app/scripts/seed_guides.py
 app/scripts/smoke_test.py
+app/scripts/smoke_workspace_user_flow.py
 app/services/__init__.py
 app/services/amap_service.py
 app/services/auth_service.py
@@ -65,6 +68,7 @@ tests/test_plan_version_service.py
 tests/test_rag_service.py
 tests/test_railway_mcp_service.py
 tests/test_web_search_service.py
+tests/test_workspace_api_e2e.py
 tests/test_workspace_services.py
 tripsage_agent_backend.egg-info/PKG-INFO
 tripsage_agent_backend.egg-info/SOURCES.txt
