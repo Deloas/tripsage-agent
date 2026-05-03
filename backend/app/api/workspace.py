@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.response import fail, ok
@@ -8,7 +8,9 @@ from app.schemas.workspace import (
     AuthRefreshRequest,
     ConversationUpdateRequest,
     GuestSessionImportRequest,
+    PreferenceBehaviorEventRequest,
     PreferenceFeedbackRequest,
+    PreferenceTimelineUndoRequest,
     UserCreateRequest,
     UserLoginRequest,
     UserProfileUpdateRequest,
@@ -19,6 +21,27 @@ from app.services.preference_service import PreferenceService
 from app.services.user_service import UserService
 
 router = APIRouter()
+
+
+def _empty_profile_layer_payload() -> dict:
+    """构造空画像层，保证游客模式也返回稳定结构。"""
+
+    return {
+        "preferred_cities": [],
+        "budget_range": None,
+        "transport_modes": [],
+        "pace_tags": [],
+        "interest_tags": [],
+        "negative_preferences": [],
+        "explicit_preferences": [],
+        "inferred_preferences": [],
+        "behavior_signals": [],
+        "profile_strength": "new",
+        "budget_profile": None,
+        "recent_evidence": [],
+        "recommendation_hint": "",
+        "updated_at": None,
+    }
 
 
 def _parse_bearer_token(authorization: str | None) -> str | None:
@@ -42,21 +65,37 @@ def _resolve_auth_context(db: Session, authorization: str | None) -> AuthContext
 
 
 def _guest_profile_payload() -> dict:
+    layer = _empty_profile_layer_payload()
     return {
-        "preferred_cities": [],
-        "budget_range": None,
-        "transport_modes": [],
-        "pace_tags": [],
-        "interest_tags": [],
-        "negative_preferences": [],
-        "explicit_preferences": [],
-        "inferred_preferences": [],
-        "behavior_signals": [],
-        "profile_strength": "new",
-        "budget_profile": None,
-        "recent_evidence": [],
+        **layer,
         "recommendation_hint": "游客模式不会保存偏好画像，登录后系统才会自动沉淀你的旅行偏好。",
-        "updated_at": None,
+        "long_term_profile": layer,
+        "session_profile": {
+            **layer,
+            "recommendation_hint": "当前还没有可沉淀的本次偏好。",
+        },
+        "blacklist_items": [],
+        "locked_items": [],
+    }
+
+
+def _empty_preference_audit_payload() -> dict:
+    """返回游客模式或空状态下稳定的审计结构。"""
+
+    return {
+        "summary": {
+            "total_events": 0,
+            "explicit_total": 0,
+            "inferred_total": 0,
+            "behavior_total": 0,
+            "session_total": 0,
+            "long_term_total": 0,
+            "locked_total": 0,
+            "blacklist_total": 0,
+        },
+        "by_dimension": [],
+        "by_source": [],
+        "by_scope": [],
     }
 
 
@@ -293,6 +332,7 @@ def delete_conversation(
 
 @router.get("/preference-profile")
 def get_preference_profile(
+    conversation_id: str | None = Query(default=None, max_length=64),
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
@@ -300,8 +340,47 @@ def get_preference_profile(
     auth = _resolve_auth_context(db, authorization)
     if auth is None:
         return ok(_guest_profile_payload())
-    profile = PreferenceService(db, user_key=str(auth.user.id)).get_profile()
+    profile = PreferenceService(db, user_key=str(auth.user.id)).get_profile(conversation_id=conversation_id)
     return ok(profile.model_dump())
+
+
+@router.get("/preference-profile/timeline")
+def get_preference_profile_timeline(
+    conversation_id: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=40, ge=1, le=80),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """读取当前用户的画像时间线。"""
+
+    auth = _resolve_auth_context(db, authorization)
+    if auth is None:
+        return ok({"items": [], "total": 0})
+    effective_limit = limit if isinstance(limit, int) else 40
+    timeline = PreferenceService(db, user_key=str(auth.user.id)).list_timeline(
+        conversation_id=conversation_id,
+        limit=effective_limit,
+    )
+    return ok(timeline.model_dump())
+
+
+@router.get("/preference-profile/audit")
+def get_preference_profile_audit(
+    conversation_id: str | None = Query(default=None, max_length=64),
+    limit_per_group: int = Query(default=12, ge=1, le=24),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """读取当前用户的画像审计结果。"""
+
+    auth = _resolve_auth_context(db, authorization)
+    if auth is None:
+        return ok(_empty_preference_audit_payload())
+    audit = PreferenceService(db, user_key=str(auth.user.id)).list_audit(
+        conversation_id=conversation_id,
+        limit_per_group=limit_per_group,
+    )
+    return ok(audit.model_dump())
 
 
 @router.post("/preference-profile/feedback")
@@ -318,9 +397,53 @@ def submit_preference_feedback(
         profile = PreferenceService(db, user_key=str(auth.user.id)).apply_manual_feedback(
             dimension=payload.dimension,
             value=payload.value,
+            action=payload.action,
             polarity=payload.polarity,
             conversation_id=payload.conversation_id,
         )
         return ok(profile.model_dump())
     except Exception as exc:  # noqa: BLE001
         return fail(5020, "偏好画像纠正失败", {"error": str(exc)})
+
+
+@router.post("/preference-profile/timeline/undo")
+def undo_preference_timeline_event(
+    payload: PreferenceTimelineUndoRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """撤销画像时间线中的可逆动作。"""
+
+    auth = _resolve_auth_context(db, authorization)
+    if auth is None:
+        return fail(5019, "游客模式下无法撤销画像动作", {"error": "guest_has_no_profile_feedback"})
+    try:
+        result = PreferenceService(db, user_key=str(auth.user.id)).undo_timeline_event(
+            event_id=payload.event_id,
+            conversation_id=payload.conversation_id,
+        )
+        return ok(result.model_dump())
+    except Exception as exc:  # noqa: BLE001
+        return fail(5022, "画像时间线撤销失败", {"error": str(exc)})
+
+
+@router.post("/preference-profile/events")
+def submit_preference_behavior_event(
+    payload: PreferenceBehaviorEventRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """接收前端关键行为埋点，并即时回写最新画像。"""
+
+    auth = _resolve_auth_context(db, authorization)
+    if auth is None:
+        return fail(5019, "游客模式下无法保存偏好画像行为事件", {"error": "guest_has_no_profile_feedback"})
+    try:
+        profile = PreferenceService(db, user_key=str(auth.user.id)).record_workspace_event(
+            action=payload.action,
+            conversation_id=payload.conversation_id,
+            payload=payload.payload,
+        )
+        return ok(profile.model_dump())
+    except Exception as exc:  # noqa: BLE001
+        return fail(5021, "偏好画像行为事件写入失败", {"error": str(exc)})

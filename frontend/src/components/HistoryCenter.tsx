@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CalendarRange,
   Clock3,
@@ -9,6 +9,7 @@ import {
   MapPinned,
   Save,
   Search,
+  ShieldCheck,
   Star,
   Tags,
   Trash2,
@@ -83,35 +84,35 @@ export function HistoryCenter({
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const profileTags = [
-    ...(profile?.preferred_cities || []),
-    ...(profile?.transport_modes || []),
-    ...(profile?.pace_tags || []),
-    ...(profile?.interest_tags || []),
-    ...(profile?.budget_range ? [profile.budget_range] : []),
-  ];
-  const cityOptions = Array.from(
-    new Set(
-      [
-        ...conversations.map((item) => item.destination_city || ""),
-        ...(profile?.preferred_cities || []),
-      ].filter(Boolean),
-    ),
+  const cityTopics = useMemo(() => buildCityTopics(conversations), [conversations]);
+  const cityOptions = useMemo(
+    () => Array.from(new Set(conversations.map((item) => item.destination_city || "").filter(Boolean))),
+    [conversations],
   );
-  const tagOptions = Array.from(
-    new Set(
-      [
-        ...conversations.flatMap((item) => item.tags || []),
-        ...profileTags,
-      ].filter(Boolean),
-    ),
-  ).slice(0, 18);
-  const cityTopics = buildCityTopics(conversations);
+  const profileTags = useMemo(
+    () => [
+      ...(profile?.preferred_cities || []),
+      ...(profile?.transport_modes || []),
+      ...(profile?.pace_tags || []),
+      ...(profile?.interest_tags || []),
+      ...(profile?.budget_range ? [profile.budget_range] : []),
+    ],
+    [profile],
+  );
+  const tagOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [
+            ...conversations.flatMap((item) => item.tags || []),
+            ...profileTags,
+          ].filter(Boolean),
+        ),
+      ).slice(0, 18),
+    [conversations, profileTags],
+  );
   const recentConversations = conversations.slice(0, 8);
   const favoriteConversations = conversations.filter((item) => item.is_favorite);
-  const featuredRecent = recentConversations.slice(0, 3);
-  const featuredFavorites = favoriteConversations.slice(0, 3);
-  const archiveCities = cityTopics.length;
 
   const filteredConversations = conversations.filter((item) => {
     if (favoritesOnly && !item.is_favorite) return false;
@@ -119,6 +120,7 @@ export function HistoryCenter({
     if (activeTag !== "all" && !(item.tags || []).includes(activeTag)) return false;
     if (!matchesBudgetFilter(item.budget, budgetFilter)) return false;
     if (!matchesTimeFilter(item.start_date, timeFilter)) return false;
+
     if (!keyword.trim()) return true;
     const haystack = [
       item.title || "",
@@ -126,16 +128,18 @@ export function HistoryCenter({
       item.destination_city || "",
       item.start_date || "",
       ...(item.tags || []),
-    ].join(" ").toLowerCase();
+    ]
+      .join(" ")
+      .toLowerCase();
     return haystack.includes(keyword.trim().toLowerCase());
   });
+
   const scopedConversations = scopeByView(filteredConversations, viewMode, topicCity);
   const selectedConversation =
     scopedConversations.find((item) => item.id === selectedId)
     || filteredConversations.find((item) => item.id === selectedId)
     || conversations.find((item) => item.id === selectedId)
     || null;
-  const favoriteCount = favoriteConversations.length;
 
   useEffect(() => {
     if (!open) return;
@@ -145,7 +149,7 @@ export function HistoryCenter({
       }
       return conversations[0]?.id || null;
     });
-  }, [open, conversations]);
+  }, [conversations, open]);
 
   useEffect(() => {
     if (!cityTopics.length) {
@@ -158,7 +162,7 @@ export function HistoryCenter({
       }
       return cityTopics[0].city;
     });
-  }, [cityTopics.length, conversations]);
+  }, [cityTopics]);
 
   useEffect(() => {
     if (!selectedConversation) {
@@ -169,12 +173,12 @@ export function HistoryCenter({
     setDraft({
       title: selectedConversation.title || "",
       destination_city: selectedConversation.destination_city || "",
-      budget: selectedConversation.budget ? String(selectedConversation.budget) : "",
+      budget: selectedConversation.budget != null ? String(selectedConversation.budget) : "",
       start_date: selectedConversation.start_date || "",
       tags: (selectedConversation.tags || []).join("，"),
     });
     setConfirmDelete(false);
-  }, [selectedConversation?.id, conversations]);
+  }, [selectedConversation]);
 
   useEffect(() => {
     if (!scopedConversations.length) {
@@ -187,41 +191,6 @@ export function HistoryCenter({
   }, [scopedConversations, selectedId]);
 
   if (!open) return null;
-
-  if (guestMode) {
-    return (
-      <div className="modal-backdrop">
-        <section className="history-center history-center-expanded" role="dialog" aria-modal="true" aria-label="历史规划中心">
-          <div className="modal-header">
-            <div>
-              <div className="section-kicker">
-                <History size={16} />
-                历史规划中心
-              </div>
-              <h2>游客会话不保留历史与偏好画像</h2>
-            </div>
-            <button className="icon-button" onClick={onClose} aria-label="关闭">
-              <X size={18} />
-            </button>
-          </div>
-
-          <section className="guest-history-lock">
-            <div className="guest-history-lock-kicker">旅行资产保存</div>
-            <strong>登录后自动沉淀历史规划、收藏、城市专题和偏好画像。</strong>
-            <p>当前会话仍可正常规划与优化，但刷新后不会保留旅行档案。</p>
-            <div className="guest-history-lock-actions">
-              <button type="button" className="primary-action" onClick={onOpenUserCenter}>
-                登录后保存本次规划
-              </button>
-              <button type="button" className="secondary-action" onClick={onClose}>
-                稍后再说
-              </button>
-            </div>
-          </section>
-        </section>
-      </div>
-    );
-  }
 
   async function handleSave() {
     if (!selectedConversation) return;
@@ -254,10 +223,6 @@ export function HistoryCenter({
     }
   }
 
-  function applyQuickTag(tag: string) {
-    setActiveTag((current) => (current === tag ? "all" : tag));
-  }
-
   function handleChangeCityFilter(value: string) {
     setCityFilter(value);
     if (viewMode === "cities") {
@@ -265,42 +230,92 @@ export function HistoryCenter({
     }
   }
 
+  if (guestMode) {
+    return (
+      <div className="modal-backdrop">
+        <section className="history-center history-center-expanded archive-hub-shell" role="dialog" aria-modal="true" aria-label="历史规划中心">
+          <div className="modal-header">
+            <div>
+              <div className="section-kicker">
+                <History size={16} />
+                历史规划中心
+              </div>
+              <h2>游客模式不会保存历史方案与画像沉淀</h2>
+            </div>
+            <button className="icon-button" onClick={onClose} aria-label="关闭">
+              <X size={18} />
+            </button>
+          </div>
+
+          <section className="archive-guest-lock">
+            <div className="archive-guest-lock-copy">
+              <div className="section-kicker">
+                <ShieldCheck size={15} />
+                历史资产权限
+              </div>
+              <strong>登录后自动保存会话、收藏、城市专题与后续可编辑版本。</strong>
+              <p>当前会话仍可正常规划，但刷新后不会留下历史档案，也不会进入画像学习。</p>
+            </div>
+            <div className="archive-guest-lock-actions">
+              <button type="button" className="primary-action" onClick={onOpenUserCenter}>
+                登录并保存本次规划
+              </button>
+              <button type="button" className="secondary-action" onClick={onClose}>
+                先继续体验
+              </button>
+            </div>
+          </section>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="modal-backdrop">
-      <section className="history-center history-center-expanded" role="dialog" aria-modal="true" aria-label="历史规划中心">
+      <section className="history-center history-center-expanded archive-hub-shell" role="dialog" aria-modal="true" aria-label="历史规划中心">
         <div className="modal-header">
           <div>
             <div className="section-kicker">
               <History size={16} />
               历史规划中心
             </div>
-            <h2>历史会话、收藏方案与城市专题统一沉淀在这里</h2>
+            <h2>把会话、收藏、城市专题和可编辑档案统一收纳在一个产品级历史中枢</h2>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="关闭">
             <X size={18} />
           </button>
         </div>
 
-        <PreferenceProfileSnapshot
-          profile={profile}
-          compact
-          title="用户偏好画像"
-          subtitle="筛选与专题聚合会同步参考长期偏好。"
-          emptyText="暂无稳定偏好，完成几次规划后会自动沉淀。"
-        />
+        <section className="archive-hub-hero">
+          <div className="archive-hub-hero-main">
+            <div className="section-kicker">
+              <Layers3 size={15} />
+              旅行档案库
+            </div>
+            <strong>{favoriteConversations.length ? "重点方案、长期偏好与最近主题都已经沉淀在这里" : "从第一条有效规划开始，系统会逐渐形成你的旅行档案库"}</strong>
+            <p>左侧做检索与筛选，右侧做档案编辑与继续规划，城市专题会自动按真实历史聚合。</p>
+          </div>
+          <PreferenceProfileSnapshot
+            profile={profile}
+            compact
+            title="偏好摘要"
+            subtitle="历史中心会同步参考当前长期偏好。"
+            emptyText="继续规划几次之后，这里会形成稳定的偏好摘要。"
+          />
+        </section>
 
-        <section className="archive-stats">
+        <section className="archive-hub-stats">
           <div>
             <span>总会话</span>
             <strong>{conversations.length}</strong>
           </div>
           <div>
             <span>已收藏</span>
-            <strong>{favoriteCount}</strong>
+            <strong>{favoriteConversations.length}</strong>
           </div>
           <div>
             <span>覆盖城市</span>
-            <strong>{archiveCities}</strong>
+            <strong>{cityTopics.length}</strong>
           </div>
           <div>
             <span>可筛标签</span>
@@ -308,7 +323,7 @@ export function HistoryCenter({
           </div>
         </section>
 
-        <div className="archive-view-switch" role="tablist" aria-label="历史视图">
+        <div className="archive-hub-switch" role="tablist" aria-label="历史视图">
           <button type="button" className={viewMode === "all" ? "active" : ""} onClick={() => setViewMode("all")}>
             <Layers3 size={15} />
             全部档案
@@ -327,23 +342,23 @@ export function HistoryCenter({
           </button>
         </div>
 
-        <div className="history-shell">
-          <section className="history-explorer">
-            <div className="archive-overview-grid">
-              <button type="button" className="archive-overview-card" onClick={() => setViewMode("recent")}>
+        <div className="archive-hub-layout">
+          <section className="archive-hub-browser">
+            <div className="archive-hub-overview-grid">
+              <button type="button" className="archive-hub-overview-card" onClick={() => setViewMode("recent")}>
                 <span>最近更新</span>
                 <strong>{recentConversations.length}</strong>
-                <p>{featuredRecent[0]?.title || "最近还没有新规划"}</p>
+                <p>{recentConversations[0]?.title || "最近还没有新规划"}</p>
               </button>
-              <button type="button" className="archive-overview-card" onClick={() => setViewMode("favorites")}>
-                <span>收藏夹</span>
-                <strong>{favoriteCount}</strong>
-                <p>{featuredFavorites[0]?.title || "优先保留重点方案"}</p>
+              <button type="button" className="archive-hub-overview-card" onClick={() => setViewMode("favorites")}>
+                <span>收藏方案</span>
+                <strong>{favoriteConversations.length}</strong>
+                <p>{favoriteConversations[0]?.title || "优先保留重点方案"}</p>
               </button>
-              <button type="button" className="archive-overview-card" onClick={() => setViewMode("cities")}>
+              <button type="button" className="archive-hub-overview-card" onClick={() => setViewMode("cities")}>
                 <span>城市专题</span>
-                <strong>{archiveCities}</strong>
-                <p>{cityTopics[0]?.city ? `${cityTopics[0].city} 等城市已形成专题` : "等待更多目的地积累"}</p>
+                <strong>{cityTopics.length}</strong>
+                <p>{cityTopics[0]?.city ? `${cityTopics[0].city} 等城市已经形成专题` : "等待更多目的地积累"}</p>
               </button>
             </div>
 
@@ -353,7 +368,7 @@ export function HistoryCenter({
                 <input
                   value={keyword}
                   onChange={(event) => setKeyword(event.target.value)}
-                  placeholder="搜索城市、标题、标签、聊天摘要"
+                  placeholder="搜索城市、标题、标签或摘要"
                 />
               </label>
               <button
@@ -381,8 +396,8 @@ export function HistoryCenter({
                 <select value={budgetFilter} onChange={(event) => setBudgetFilter(event.target.value as BudgetFilter)}>
                   <option value="all">全部预算</option>
                   <option value="light">1000 以下</option>
-                  <option value="balanced">1000-2999</option>
-                  <option value="comfort">3000-5999</option>
+                  <option value="balanced">1000 - 2999</option>
+                  <option value="comfort">3000 - 5999</option>
                   <option value="premium">6000 以上</option>
                 </select>
               </label>
@@ -410,7 +425,7 @@ export function HistoryCenter({
                 <button
                   type="button"
                   className={`archive-tag-chip ${activeTag === tag ? "active" : ""}`}
-                  onClick={() => applyQuickTag(tag)}
+                  onClick={() => setActiveTag((current) => (current === tag ? "all" : tag))}
                   key={tag}
                 >
                   {tag}
@@ -445,68 +460,77 @@ export function HistoryCenter({
             </div>
 
             <div className="history-list history-list-advanced">
-              {scopedConversations.map((item) => (
-                <article
-                  className={`history-item history-item-advanced ${selectedId === item.id ? "selected" : ""}`}
-                  key={item.id}
-                >
-                  <button type="button" className="history-main" onClick={() => setSelectedId(item.id)}>
-                    <div className="history-title-row">
-                      <strong>{item.title || "未命名规划"}</strong>
-                      <span className="history-time-pill">
-                        <Clock3 size={13} />
-                        {formatTime(item.updated_at)}
-                      </span>
-                    </div>
-                    <p>{item.latest_message || "暂无消息摘要"}</p>
-                    <div className="history-meta-row">
-                      {item.destination_city ? <span>{item.destination_city}</span> : null}
-                      {item.start_date ? <span>{item.start_date}</span> : null}
-                      {item.budget ? <span>{formatBudget(item.budget)}</span> : null}
-                      <span>{item.message_count} 消息</span>
-                      <span>{item.version_count} 版本</span>
-                    </div>
-                    <div className="history-tag-row">
-                      {(item.tags || []).slice(0, 5).map((tag) => (
-                        <em key={tag}>{tag}</em>
-                      ))}
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    className={`history-favorite-button ${item.is_favorite ? "active" : ""}`}
-                    onClick={() => void handleToggleFavorite(item)}
-                    aria-label={item.is_favorite ? "取消收藏" : "收藏会话"}
+              {scopedConversations.length ? (
+                scopedConversations.map((item) => (
+                  <article
+                    className={`history-item history-item-advanced ${selectedId === item.id ? "selected" : ""}`}
+                    key={item.id}
                   >
-                    <Star size={16} fill={item.is_favorite ? "currentColor" : "none"} />
-                  </button>
-                </article>
-              ))}
-              {!scopedConversations.length ? <div className="empty-line">当前视图和筛选条件下没有历史规划，换个条件或继续创建新的旅行方案。</div> : null}
+                    <button type="button" className="history-main" onClick={() => setSelectedId(item.id)}>
+                      <div className="history-title-row">
+                        <strong>{item.title || "未命名规划"}</strong>
+                        <span className="history-time-pill">
+                          <Clock3 size={13} />
+                          {formatTime(item.updated_at)}
+                        </span>
+                      </div>
+                      <p>{item.latest_message || "暂无消息摘要"}</p>
+                      <div className="history-meta-row">
+                        {item.destination_city ? <span>{item.destination_city}</span> : null}
+                        {item.start_date ? <span>{item.start_date}</span> : null}
+                        {item.budget ? <span>{formatBudget(item.budget)}</span> : null}
+                        <span>{item.message_count} 消息</span>
+                        <span>{item.version_count} 版本</span>
+                      </div>
+                      <div className="history-tag-row">
+                        {(item.tags || []).slice(0, 5).map((tag) => (
+                          <em key={tag}>{tag}</em>
+                        ))}
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      className={`history-favorite-button ${item.is_favorite ? "active" : ""}`}
+                      onClick={() => void handleToggleFavorite(item)}
+                      aria-label={item.is_favorite ? "取消收藏" : "收藏会话"}
+                    >
+                      <Star size={16} fill={item.is_favorite ? "currentColor" : "none"} />
+                    </button>
+                  </article>
+                ))
+              ) : (
+                <div className="empty-line">当前视图和筛选条件下没有历史规划，换个条件或继续创建新的旅行方案。</div>
+              )}
             </div>
           </section>
 
-          <aside className="archive-editor">
+          <aside className="archive-hub-inspector">
             {selectedConversation ? (
               <>
                 <div className="archive-editor-header">
                   <div className="section-kicker">
                     <Tags size={15} />
-                    档案编辑
+                    档案详情
                   </div>
                   <button
                     type="button"
-                    className="secondary-action"
+                    className="primary-action"
                     onClick={() => onOpenConversation(selectedConversation.id)}
                   >
                     继续对话
                   </button>
                 </div>
 
-                <div className="archive-editor-summary">
+                <section className="archive-detail-card">
                   <strong>{selectedConversation.title || "未命名规划"}</strong>
-                  <p>{selectedConversation.latest_message || "暂无摘要"}</p>
-                </div>
+                  <p>{selectedConversation.latest_message || "暂无摘要内容"}</p>
+                  <div className="archive-detail-meta">
+                    {selectedConversation.destination_city ? <span>{selectedConversation.destination_city}</span> : null}
+                    {selectedConversation.start_date ? <span>{selectedConversation.start_date}</span> : null}
+                    {selectedConversation.budget ? <span>{formatBudget(selectedConversation.budget)}</span> : null}
+                    <span>{selectedConversation.version_count} 个版本</span>
+                  </div>
+                </section>
 
                 <div className="archive-editor-form">
                   <label>
@@ -539,7 +563,7 @@ export function HistoryCenter({
                       <input
                         value={draft.start_date}
                         onChange={(event) => setDraft((current) => ({ ...current, start_date: event.target.value }))}
-                        placeholder="例如：周末 / 2026-05-02"
+                        placeholder="例如：2026-05-12 / 周末"
                       />
                     </label>
                   </div>
@@ -576,7 +600,7 @@ export function HistoryCenter({
                 <div className={`archive-danger-zone ${confirmDelete ? "active" : ""}`}>
                   <div>
                     <span>删除会话</span>
-                    <p>删除后会同步清理该会话的消息、版本、分享页和工具记录。</p>
+                    <p>删除后会同步清理该会话的消息、版本、分享页与工作台记录。</p>
                   </div>
                   {confirmDelete ? (
                     <div className="archive-danger-actions">
@@ -599,7 +623,7 @@ export function HistoryCenter({
             ) : (
               <div className="archive-empty">
                 <strong>暂无可编辑会话</strong>
-                <p>先取消筛选或开始一段新的旅行规划，这里会自动形成可管理的历史档案。</p>
+                <p>先取消筛选，或继续创建一个新的旅行方案，这里会自动形成可管理的历史档案。</p>
               </div>
             )}
           </aside>
@@ -618,12 +642,14 @@ function parseTags(value: string): string[] {
 }
 
 function formatTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(value));
+  }).format(date);
 }
 
 function formatBudget(value: number) {
@@ -648,11 +674,7 @@ function matchesTimeFilter(value: string | null | undefined, filter: TimeFilter)
   return /\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}月\d{1,2}日/.test(value);
 }
 
-function scopeByView(
-  conversations: ConversationSummary[],
-  viewMode: ArchiveView,
-  topicCity: string,
-) {
+function scopeByView(conversations: ConversationSummary[], viewMode: ArchiveView, topicCity: string) {
   if (viewMode === "recent") return conversations.slice(0, 12);
   if (viewMode === "favorites") return conversations.filter((item) => item.is_favorite);
   if (viewMode === "cities") {

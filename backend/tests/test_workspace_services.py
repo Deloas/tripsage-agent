@@ -18,7 +18,9 @@ from app.schemas.chat import ChatRequest
 from app.schemas.workspace import (
     ConversationUpdateRequest,
     GuestSessionImportRequest,
+    PreferenceBehaviorEventRequest,
     PreferenceFeedbackRequest,
+    PreferenceTimelineUndoRequest,
     UserCreateRequest,
     UserLoginRequest,
     UserProfileUpdateRequest,
@@ -156,6 +158,40 @@ def test_preference_profile_accepts_manual_feedback(db_session) -> None:
     assert any("早班车" in item for item in profile.negative_preferences)
     assert any(item.source_type == "manual_prefer" for item in events)
     assert any(item.source_type == "manual_avoid" for item in events)
+
+
+def test_preference_profile_splits_long_term_and_session_layers(db_session) -> None:
+    """画像应同时给出长期层和本次层，并支持把长期偏好移除。"""
+
+    service = PreferenceService(db_session, user_key="108")
+    service.apply_manual_feedback(
+        dimension="transport",
+        value=HIGH_SPEED_RAIL,
+        action="set_common",
+        conversation_id="conv-layer-1",
+    )
+    service.apply_manual_feedback(
+        dimension="interest",
+        value=FOOD,
+        action="session_only",
+        polarity="positive",
+        conversation_id="conv-layer-1",
+    )
+
+    profile = service.get_profile(conversation_id="conv-layer-1")
+
+    assert HIGH_SPEED_RAIL in profile.long_term_profile.transport_modes
+    assert FOOD in profile.session_profile.interest_tags
+    assert FOOD not in profile.long_term_profile.interest_tags
+
+    profile = service.apply_manual_feedback(
+        dimension="transport",
+        value=HIGH_SPEED_RAIL,
+        action="remove_long_term",
+        conversation_id="conv-layer-1",
+    )
+
+    assert HIGH_SPEED_RAIL not in profile.long_term_profile.transport_modes
 
 
 def test_conversation_service_lists_and_reads_history(db_session) -> None:
@@ -455,6 +491,231 @@ def test_workspace_preference_feedback_route_updates_profile(db_session) -> None
 
     assert body["code"] == 0
     assert HIGH_SPEED_RAIL in body["data"]["transport_modes"]
+
+
+def test_workspace_preference_feedback_route_supports_session_action(db_session) -> None:
+    """纠偏接口应支持“仅本次生效”这类分层动作。"""
+
+    auth = _create_logged_user(db_session)
+    authorization = _auth_header(auth.access_token)
+
+    response = workspace_api.submit_preference_feedback(
+        PreferenceFeedbackRequest(
+            dimension="interest",
+            value=FOOD,
+            action="session_only",
+            polarity="positive",
+            conversation_id="conv-feedback-2",
+        ),
+        authorization=authorization,
+        db=db_session,
+    )
+    body = json.loads(response.body)
+
+    assert body["code"] == 0
+    assert FOOD in body["data"]["session_profile"]["interest_tags"]
+    assert FOOD not in body["data"]["long_term_profile"]["interest_tags"]
+
+
+def test_workspace_preference_behavior_event_route_updates_profile(db_session) -> None:
+    """行为事件接口应把收藏、历史续写等动作写入行为画像。"""
+
+    auth = _create_logged_user(db_session)
+    authorization = _auth_header(auth.access_token)
+
+    response = workspace_api.submit_preference_behavior_event(
+        PreferenceBehaviorEventRequest(
+            action="favorite_on",
+            conversation_id="conv-event-1",
+            payload={
+                "title": f"{NANJING}周末慢游",
+                "destination_city": NANJING,
+                "budget": 1800,
+                "tags": [WEEKEND, FOOD],
+                "summary": "高铁优先，轻松，美食历史。",
+            },
+        ),
+        authorization=authorization,
+        db=db_session,
+    )
+    body = json.loads(response.body)
+    events = db_session.query(TravelPreferenceEvent).filter(TravelPreferenceEvent.user_key == str(auth.user.id)).all()
+
+    assert body["code"] == 0
+    assert any("收藏" in item for item in body["data"]["behavior_signals"])
+    assert NANJING in body["data"]["preferred_cities"]
+    assert any(item.source_type == "favorite_on" for item in events)
+
+
+def test_workspace_preference_timeline_route_returns_undoable_items(db_session) -> None:
+    """画像时间线应把可逆动作聚合出来，并标明可撤销。"""
+
+    auth = _create_logged_user(db_session)
+    authorization = _auth_header(auth.access_token)
+
+    workspace_api.submit_preference_feedback(
+        PreferenceFeedbackRequest(
+            dimension="transport",
+            value=HIGH_SPEED_RAIL,
+            action="set_common",
+            conversation_id="conv-timeline-1",
+        ),
+        authorization=authorization,
+        db=db_session,
+    )
+
+    response = workspace_api.get_preference_profile_timeline(
+        conversation_id="conv-timeline-1",
+        limit=10,
+        authorization=authorization,
+        db=db_session,
+    )
+    body = json.loads(response.body)
+
+    assert body["code"] == 0
+    assert body["data"]["items"]
+    assert body["data"]["items"][0]["can_undo"] is True
+    assert "设为常用" in body["data"]["items"][0]["title"]
+
+
+def test_workspace_preference_timeline_undo_route_reverts_profile_and_marks_item(db_session) -> None:
+    """撤销接口应能回滚最近一次画像动作，并让时间线显示已撤销。"""
+
+    auth = _create_logged_user(db_session)
+    authorization = _auth_header(auth.access_token)
+
+    workspace_api.submit_preference_feedback(
+        PreferenceFeedbackRequest(
+            dimension="interest",
+            value=FOOD,
+            action="session_only",
+            conversation_id="conv-undo-1",
+        ),
+        authorization=authorization,
+        db=db_session,
+    )
+
+    timeline_response = workspace_api.get_preference_profile_timeline(
+        conversation_id="conv-undo-1",
+        authorization=authorization,
+        db=db_session,
+    )
+    timeline_body = json.loads(timeline_response.body)
+    event_id = timeline_body["data"]["items"][0]["id"]
+
+    undo_response = workspace_api.undo_preference_timeline_event(
+        PreferenceTimelineUndoRequest(event_id=event_id, conversation_id="conv-undo-1"),
+        authorization=authorization,
+        db=db_session,
+    )
+    undo_body = json.loads(undo_response.body)
+
+    assert undo_body["code"] == 0
+    assert undo_body["data"]["timeline"]["items"][0]["is_undone"] is True
+    assert FOOD not in undo_body["data"]["profile"]["session_profile"]["interest_tags"]
+
+
+def test_preference_profile_supports_lock_and_blacklist_governance(db_session) -> None:
+    """画像治理应支持长期锁定、加入黑名单、移除黑名单与解除锁定。"""
+
+    service = PreferenceService(db_session, user_key="256")
+    service.apply_manual_feedback(
+        dimension="transport",
+        value=HIGH_SPEED_RAIL,
+        action="set_common",
+        conversation_id="conv-governance-1",
+    )
+
+    profile = service.apply_manual_feedback(
+        dimension="transport",
+        value=HIGH_SPEED_RAIL,
+        action="lock_long_term",
+        conversation_id="conv-governance-1",
+    )
+    assert any(item.value == HIGH_SPEED_RAIL for item in profile.locked_items)
+
+    profile = service.apply_manual_feedback(
+        dimension="transport",
+        value=HIGH_SPEED_RAIL,
+        action="avoid",
+        conversation_id="conv-governance-1",
+    )
+    assert any(item.value == HIGH_SPEED_RAIL for item in profile.blacklist_items)
+
+    profile = service.apply_manual_feedback(
+        dimension="transport",
+        value=HIGH_SPEED_RAIL,
+        action="remove_avoid",
+        conversation_id="conv-governance-1",
+    )
+    assert all(item.value != HIGH_SPEED_RAIL for item in profile.blacklist_items)
+    assert any(item.value == HIGH_SPEED_RAIL for item in profile.locked_items)
+    assert HIGH_SPEED_RAIL in profile.long_term_profile.transport_modes
+
+    profile = service.apply_manual_feedback(
+        dimension="transport",
+        value=HIGH_SPEED_RAIL,
+        action="unlock_long_term",
+        conversation_id="conv-governance-1",
+    )
+    assert all(item.value != HIGH_SPEED_RAIL for item in profile.locked_items)
+
+
+def test_workspace_preference_audit_route_returns_grouped_view(db_session) -> None:
+    """画像审计接口应返回治理摘要以及按维度、来源、作用域分组的结果。"""
+
+    auth = _create_logged_user(db_session)
+    authorization = _auth_header(auth.access_token)
+
+    workspace_api.submit_preference_feedback(
+        PreferenceFeedbackRequest(
+            dimension="interest",
+            value=FOOD,
+            action="set_common",
+            conversation_id="conv-audit-1",
+        ),
+        authorization=authorization,
+        db=db_session,
+    )
+    workspace_api.submit_preference_feedback(
+        PreferenceFeedbackRequest(
+            dimension="interest",
+            value=FOOD,
+            action="lock_long_term",
+            conversation_id="conv-audit-1",
+        ),
+        authorization=authorization,
+        db=db_session,
+    )
+    workspace_api.submit_preference_behavior_event(
+        PreferenceBehaviorEventRequest(
+            action="memory_open",
+            conversation_id="conv-audit-1",
+            payload={"title": "画像中心", "summary": "用户打开画像工作台"},
+        ),
+        authorization=authorization,
+        db=db_session,
+    )
+
+    response = workspace_api.get_preference_profile_audit(
+        conversation_id="conv-audit-1",
+        limit_per_group=10,
+        authorization=authorization,
+        db=db_session,
+    )
+    body = json.loads(response.body)
+    dimension_items = [
+        item
+        for group in body["data"]["by_dimension"]
+        for item in group["items"]
+    ]
+
+    assert body["code"] == 0
+    assert body["data"]["summary"]["locked_total"] >= 1
+    assert body["data"]["summary"]["explicit_total"] >= 1
+    assert any(group["key"] == "interest" for group in body["data"]["by_dimension"])
+    assert any(item["source_type"] == "manual_lock" for item in dimension_items)
+    assert any(item["source_type"] == "memory_open" for item in dimension_items)
 
 
 def test_workspace_preference_feedback_route_blocks_guest_mode(db_session) -> None:

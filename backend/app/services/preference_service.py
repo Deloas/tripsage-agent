@@ -4,12 +4,26 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from statistics import median
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.agents.nodes import CITY_WORDS
 from app.db.models import TravelPreferenceEvent, TravelPreferenceProfile, User, utc_now
-from app.schemas.workspace import BudgetProfileView, PreferenceEvidenceView, PreferenceProfileView
+from app.schemas.workspace import (
+    BudgetProfileView,
+    PreferenceAuditGroupView,
+    PreferenceAuditItemView,
+    PreferenceAuditSummaryView,
+    PreferenceAuditView,
+    PreferenceEvidenceView,
+    PreferenceGovernanceItemView,
+    PreferenceLayerView,
+    PreferenceProfileView,
+    PreferenceTimelineItemView,
+    PreferenceTimelineUndoResultView,
+    PreferenceTimelineView,
+)
 
 
 TRANSPORT_PATTERNS = {
@@ -68,12 +82,31 @@ SOURCE_GROUPS = {
     "profile_setting": "explicit",
     "manual_prefer": "explicit",
     "manual_avoid": "explicit",
+    "manual_session": "explicit",
+    "manual_demote": "explicit",
+    "manual_allow": "explicit",
+    "manual_lock": "explicit",
+    "manual_unlock": "explicit",
     "trip_signal": "inferred",
     "destination_inferred": "inferred",
     "decision_accept": "behavior",
     "decision_ignore": "behavior",
     "itinerary_edit": "behavior",
     "railway_selection": "behavior",
+    "version_select": "behavior",
+    "version_rollback": "behavior",
+    "favorite_on": "behavior",
+    "favorite_off": "behavior",
+    "share_plan": "behavior",
+    "history_open": "behavior",
+    "continue_optimize": "behavior",
+    "memory_open": "behavior",
+    "audit_open": "behavior",
+    "governance_open": "behavior",
+    "blacklist_remove": "behavior",
+    "profile_lock": "behavior",
+    "profile_unlock": "behavior",
+    "timeline_undo": "behavior",
     "legacy_profile": "inferred",
 }
 
@@ -82,13 +115,94 @@ SOURCE_WEIGHTS = {
     "profile_setting": 1.15,
     "manual_prefer": 1.75,
     "manual_avoid": 1.75,
+    "manual_session": 1.55,
+    "manual_demote": 2.0,
+    "manual_allow": 1.85,
+    "manual_lock": 2.35,
+    "manual_unlock": 2.05,
     "trip_signal": 0.45,
     "destination_inferred": 0.35,
     "decision_accept": 1.1,
     "decision_ignore": 1.0,
     "itinerary_edit": 1.2,
     "railway_selection": 1.05,
+    "version_select": 0.78,
+    "version_rollback": 1.1,
+    "favorite_on": 1.18,
+    "favorite_off": 0.65,
+    "share_plan": 0.95,
+    "history_open": 0.92,
+    "continue_optimize": 1.08,
+    "memory_open": 0.58,
+    "audit_open": 0.54,
+    "governance_open": 0.52,
+    "blacklist_remove": 0.88,
+    "profile_lock": 0.94,
+    "profile_unlock": 0.9,
+    "timeline_undo": 0.82,
     "legacy_profile": 0.55,
+}
+
+SESSION_SCOPED_SOURCE_TYPES = {"manual_session"}
+CURRENT_CONVERSATION_TRANSIENT_SOURCES = {
+    "user_message",
+    "trip_signal",
+    "destination_inferred",
+    "decision_accept",
+    "decision_ignore",
+    "itinerary_edit",
+    "railway_selection",
+    "continue_optimize",
+}
+
+TIMELINE_SOURCE_LABELS = {
+    "manual_allow": "移除黑名单",
+    "manual_lock": "长期锁定",
+    "manual_unlock": "解除锁定",
+    "memory_open": "打开画像中心",
+    "audit_open": "打开审计视图",
+    "governance_open": "打开治理面板",
+    "blacklist_remove": "移除黑名单",
+    "profile_lock": "锁定长期偏好",
+    "profile_unlock": "解除长期锁定",
+    "timeline_undo": "撤销时间线动作",
+    "user_message": "对话表达",
+    "profile_setting": "资料设定",
+    "manual_prefer": "设为常用",
+    "manual_avoid": "不再推荐",
+    "manual_session": "仅本次生效",
+    "manual_demote": "移出长期偏好",
+    "trip_signal": "规划结果学习",
+    "destination_inferred": "目的地推断",
+    "decision_accept": "采纳模块建议",
+    "decision_ignore": "忽略模块建议",
+    "itinerary_edit": "手动编辑行程",
+    "railway_selection": "列车选择",
+    "version_select": "查看方案版本",
+    "version_rollback": "回退历史版本",
+    "favorite_on": "收藏方案",
+    "favorite_off": "取消收藏",
+    "share_plan": "分享方案",
+    "history_open": "打开历史方案",
+    "continue_optimize": "继续优化",
+    "legacy_profile": "历史画像",
+}
+
+UNDOABLE_SOURCE_TYPES = {
+    "manual_allow",
+    "manual_lock",
+    "manual_unlock",
+    "manual_prefer",
+    "manual_avoid",
+    "manual_session",
+    "manual_demote",
+    "version_select",
+    "version_rollback",
+    "favorite_on",
+    "favorite_off",
+    "share_plan",
+    "history_open",
+    "continue_optimize",
 }
 
 HALF_LIFE_DAYS = 90
@@ -114,14 +228,17 @@ class PreferenceService:
         self.db = db
         self.user_key = user_key
 
-    def get_profile(self) -> PreferenceProfileView:
+    def get_profile(self, conversation_id: str | None = None) -> PreferenceProfileView:
         """读取聚合后的用户偏好画像。"""
         profile = self._get_or_create(commit=False)
         events = self._load_events()
         legacy_events = self._legacy_seed_events(profile)
         user = self._load_user()
         user_events = self._profile_setting_events(user)
-        return self._build_profile(events + legacy_events + user_events)
+        return self._build_profile(
+            events + legacy_events + user_events,
+            conversation_id=conversation_id,
+        )
 
     def learn_from_interaction(
         self,
@@ -148,7 +265,7 @@ class PreferenceService:
 
         signals.extend(self._extract_behavior_signals(context))
         if not signals:
-            return self.get_profile()
+            return self.get_profile(conversation_id=conversation_id)
 
         return self._persist_signals(
             signals,
@@ -162,7 +279,8 @@ class PreferenceService:
         *,
         dimension: str,
         value: str,
-        polarity: str,
+        action: str | None = None,
+        polarity: str | None = None,
         conversation_id: str | None = None,
     ) -> PreferenceProfileView:
         """把用户在画像工作台上的人工校正沉淀为强信号。"""
@@ -172,8 +290,13 @@ class PreferenceService:
         if not normalized_dimension or not normalized_value:
             raise ValueError("invalid_preference_feedback")
 
-        source_type = "manual_prefer" if polarity == "positive" else "manual_avoid"
-        metadata = {"manual_feedback": True}
+        action_key = self._normalize_feedback_action(action, polarity)
+        source_type, signal_polarity, expires_in_days = self._manual_feedback_config(action_key, polarity)
+        metadata = {
+            "manual_feedback": True,
+            "feedback_action": action_key,
+            "scope": "session" if action_key == "session_only" else "long_term",
+        }
         if normalized_dimension == "budget":
             amount = self._parse_budget(normalized_value)
             if amount is not None:
@@ -184,7 +307,7 @@ class PreferenceService:
             dimension=normalized_dimension,
             value=normalized_value,
             source_type=source_type,
-            polarity=polarity,
+            polarity=signal_polarity,
             confidence=0.98,
             weight=SOURCE_WEIGHTS[source_type],
             raw_text=f"{normalized_dimension}:{normalized_value}",
@@ -195,7 +318,177 @@ class PreferenceService:
             profile=profile,
             conversation_id=conversation_id,
             fallback_raw_text=normalized_value,
-            expires_in_days=365 * 3,
+            expires_in_days=expires_in_days,
+        )
+
+    def record_workspace_event(
+        self,
+        *,
+        action: str,
+        conversation_id: str | None = None,
+        payload: dict | None = None,
+    ) -> PreferenceProfileView:
+        """把前端关键行为沉淀为行为画像与偏好证据。"""
+
+        profile = self._get_or_create(commit=False)
+        action_key = self._normalize_workspace_action(action)
+        if not action_key:
+            raise ValueError("invalid_workspace_event")
+
+        normalized_payload = payload if isinstance(payload, dict) else {}
+        signals = self._build_workspace_event_signals(action_key, normalized_payload)
+        if not signals:
+            return self.get_profile(conversation_id=conversation_id)
+
+        return self._persist_signals(
+            signals,
+            profile=profile,
+            conversation_id=conversation_id,
+            fallback_raw_text=self._build_workspace_event_fallback_text(action_key, normalized_payload),
+            expires_in_days=365,
+        )
+
+    def list_timeline(
+        self,
+        *,
+        conversation_id: str | None = None,
+        limit: int = 40,
+    ) -> PreferenceTimelineView:
+        """返回适合前端直接渲染的画像时间线。"""
+
+        events = self._load_events()
+        selected: list[tuple[TravelPreferenceEvent, dict]] = []
+        for event in events:
+            metadata = self._loads_json(event.metadata_json, {})
+            if event.source_type == "legacy_profile":
+                continue
+            if (
+                conversation_id
+                and event.conversation_id
+                and event.conversation_id != conversation_id
+                and (
+                    str(metadata.get("scope") or "") == "session"
+                    or event.source_type in CURRENT_CONVERSATION_TRANSIENT_SOURCES
+                )
+            ):
+                continue
+            selected.append((event, metadata))
+
+        grouped: dict[str, list[tuple[TravelPreferenceEvent, dict]]] = {}
+        order: list[str] = []
+        for event, metadata in selected:
+            group_key = str(metadata.get("operation_id") or f"event-{event.id}")
+            if group_key not in grouped:
+                grouped[group_key] = []
+                order.append(group_key)
+            grouped[group_key].append((event, metadata))
+
+        items: list[PreferenceTimelineItemView] = []
+        for group_key in order:
+            item = self._build_timeline_item(grouped[group_key])
+            if item is None:
+                continue
+            items.append(item)
+            if len(items) >= limit:
+                break
+
+        return PreferenceTimelineView(items=items, total=len(items))
+
+    def list_audit(
+        self,
+        *,
+        conversation_id: str | None = None,
+        limit_per_group: int = 12,
+    ) -> PreferenceAuditView:
+        """返回当前画像的可审计视图，便于前端按维度、来源和作用域复核。"""
+
+        profile = self._get_or_create(commit=False)
+        normalized_events = self._normalize_events(
+            self._load_events() + self._legacy_seed_events(profile) + self._profile_setting_events(self._load_user())
+        )
+        selected = self._select_audit_events(normalized_events, conversation_id)
+        locked_map = self._governance_state_map(
+            selected,
+            activate_source_types={"manual_lock"},
+            deactivate_source_types={"manual_unlock"},
+        )
+        blacklist_map = self._governance_state_map(
+            selected,
+            activate_source_types={"manual_avoid"},
+            deactivate_source_types={"manual_allow"},
+        )
+        items = [
+            self._build_audit_item(item, locked_map=locked_map, blacklist_map=blacklist_map)
+            for item in selected
+        ]
+        return PreferenceAuditView(
+            summary=self._build_audit_summary(items, locked_map=locked_map, blacklist_map=blacklist_map),
+            by_dimension=self._group_audit_items(
+                items,
+                key_getter=lambda item: item.dimension,
+                label_getter=lambda item: item.dimension_label,
+                limit_per_group=limit_per_group,
+            ),
+            by_source=self._group_audit_items(
+                items,
+                key_getter=lambda item: item.source_group,
+                label_getter=lambda item: self._audit_source_group_label(item.source_group),
+                limit_per_group=limit_per_group,
+            ),
+            by_scope=self._group_audit_items(
+                items,
+                key_getter=lambda item: item.scope,
+                label_getter=lambda item: self._audit_scope_label(item.scope),
+                limit_per_group=limit_per_group,
+            ),
+        )
+
+    def undo_timeline_event(
+        self,
+        *,
+        event_id: int,
+        conversation_id: str | None = None,
+        timeline_limit: int = 40,
+    ) -> PreferenceTimelineUndoResultView:
+        """撤销一条可撤销的画像动作，并返回最新画像与时间线。"""
+
+        events = self._load_events()
+        target = next((item for item in events if item.id == event_id), None)
+        if target is None:
+            raise ValueError("preference_timeline_event_not_found")
+
+        target_metadata = self._loads_json(target.metadata_json, {})
+        if target_metadata.get("undone"):
+            raise ValueError("preference_timeline_event_already_undone")
+        if not self._can_undo_timeline_source(target.source_type):
+            raise ValueError("preference_timeline_event_cannot_undo")
+
+        operation_id = str(target_metadata.get("operation_id") or "")
+        group_events = [
+            item
+            for item in events
+            if self._event_matches_operation(item, operation_id, fallback_event_id=target.id)
+        ]
+        if not group_events:
+            group_events = [target]
+
+        now = utc_now()
+        for event in group_events:
+            metadata = self._loads_json(event.metadata_json, {})
+            metadata["undone"] = True
+            metadata["undone_at"] = now.isoformat()
+            metadata["undo_source"] = "user_timeline_revert"
+            event.metadata_json = json.dumps(metadata, ensure_ascii=False)
+            event.expires_at = now - timedelta(seconds=1)
+            self.db.add(event)
+
+        self.db.commit()
+        profile = self.get_profile(conversation_id=conversation_id)
+        timeline = self.list_timeline(conversation_id=conversation_id, limit=timeline_limit)
+        return PreferenceTimelineUndoResultView(
+            profile=profile,
+            timeline=timeline,
+            undone_event_id=event_id,
         )
 
     def _load_events(self) -> list[TravelPreferenceEvent]:
@@ -218,7 +511,10 @@ class PreferenceService:
     ) -> PreferenceProfileView:
         """统一持久化偏好信号，并回写聚合画像快照。"""
         now = utc_now()
+        operation_id = f"pref-op-{uuid4().hex[:12]}"
         for signal in signals:
+            # 每次写入都附带同一个操作批次号，便于时间线分组和撤销。
+            metadata = {**(signal.metadata or {}), "operation_id": operation_id}
             self.db.add(
                 TravelPreferenceEvent(
                     user_key=self.user_key,
@@ -229,7 +525,7 @@ class PreferenceService:
                     polarity=signal.polarity,
                     confidence=max(0.1, min(signal.confidence, 1.0)),
                     weight=max(0.1, signal.weight),
-                    metadata_json=json.dumps(signal.metadata or {}, ensure_ascii=False),
+                    metadata_json=json.dumps(metadata, ensure_ascii=False),
                     raw_text=(signal.raw_text or fallback_raw_text)[:4000],
                     created_at=now,
                     expires_at=now + timedelta(days=expires_in_days),
@@ -237,7 +533,10 @@ class PreferenceService:
             )
 
         self.db.flush()
-        aggregated = self._build_profile(self._load_events() + self._profile_setting_events(self._load_user()))
+        aggregated = self._build_profile(
+            self._load_events() + self._profile_setting_events(self._load_user()),
+            conversation_id=conversation_id,
+        )
         self._write_legacy_snapshot(profile, aggregated)
         self.db.add(profile)
         self.db.commit()
@@ -246,10 +545,60 @@ class PreferenceService:
     def _build_profile(
         self,
         events: list[TravelPreferenceEvent | PreferenceSignal],
+        *,
+        conversation_id: str | None = None,
     ) -> PreferenceProfileView:
-        now = utc_now()
+        """同时构造长期偏好层、本次偏好层和前端可直接消费的合并画像。"""
+
+        normalized_events = self._normalize_events(events)
+        long_term_events = self._select_long_term_events(normalized_events, conversation_id)
+        session_events = self._select_session_events(normalized_events, conversation_id)
+        blacklist_items, locked_items = self._build_governance_views(long_term_events)
+
+        long_term_profile = self._build_profile_layer(
+            long_term_events,
+            empty_hint="系统还没有沉淀出稳定的长期偏好。",
+        )
+        session_profile = self._build_profile_layer(
+            session_events,
+            empty_hint="当前会话还没有形成明确的本次偏好。",
+        )
+        merged_profile = self._build_profile_layer(
+            long_term_events + session_events,
+            empty_hint="暂无稳定偏好，系统会继续依据你的真实对话、编辑行为和方案决策自动学习。",
+        )
+
+        return PreferenceProfileView(
+            preferred_cities=merged_profile.preferred_cities,
+            budget_range=merged_profile.budget_range,
+            transport_modes=merged_profile.transport_modes,
+            pace_tags=merged_profile.pace_tags,
+            interest_tags=merged_profile.interest_tags,
+            negative_preferences=merged_profile.negative_preferences,
+            explicit_preferences=merged_profile.explicit_preferences,
+            inferred_preferences=merged_profile.inferred_preferences,
+            behavior_signals=merged_profile.behavior_signals,
+            profile_strength=merged_profile.profile_strength,
+            budget_profile=merged_profile.budget_profile,
+            recent_evidence=merged_profile.recent_evidence,
+            recommendation_hint=merged_profile.recommendation_hint,
+            long_term_profile=long_term_profile,
+            session_profile=session_profile,
+            blacklist_items=blacklist_items,
+            locked_items=locked_items,
+            updated_at=merged_profile.updated_at,
+        )
+
+    def _build_profile_layer(
+        self,
+        normalized_events: list[dict],
+        *,
+        empty_hint: str,
+    ) -> PreferenceLayerView:
         positive_scores: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
         negative_scores: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        demote_scores: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        allow_scores: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
         explicit_scores: dict[str, float] = defaultdict(float)
         inferred_scores: dict[str, float] = defaultdict(float)
         behavior_scores: dict[str, float] = defaultdict(float)
@@ -258,8 +607,8 @@ class PreferenceService:
         recent_evidence: list[PreferenceEvidenceView] = []
         seen_recent: set[tuple[str, str, str, str]] = set()
         updated_at: datetime | None = None
+        active_event_count = 0
 
-        normalized_events = self._normalize_events(events)
         for item in normalized_events:
             score = item["score"]
             dimension = item["dimension"]
@@ -267,22 +616,32 @@ class PreferenceService:
             polarity = item["polarity"]
             label = self._event_label(dimension, value, polarity)
 
-            if polarity == "negative":
+            if item["source_type"] == "manual_allow":
+                allow_scores[dimension][value] += score
+            elif item["source_type"] == "manual_unlock":
+                # 解锁只改变治理状态，不直接改写正负偏好分数。
+                pass
+            elif polarity == "neutral":
+                demote_scores[dimension][value] += score
+            elif polarity == "negative":
                 negative_scores[dimension][value] += score
+                active_event_count += 1
             else:
                 positive_scores[dimension][value] += score
+                active_event_count += 1
 
             source_group = SOURCE_GROUPS.get(item["source_type"], "inferred")
-            if source_group == "explicit":
-                explicit_scores[label] += score
-            elif source_group == "behavior":
-                behavior_scores[label] += score
-            else:
-                inferred_scores[label] += score
+            if polarity != "neutral":
+                if source_group == "explicit":
+                    explicit_scores[label] += score
+                elif source_group == "behavior":
+                    behavior_scores[label] += score
+                else:
+                    inferred_scores[label] += score
 
             if dimension == "budget" and item["amount"] is not None and polarity == "positive":
                 budget_amounts.append(item["amount"])
-            if dimension == "budget_style":
+            if dimension == "budget_style" and polarity != "neutral":
                 budget_style_scores[value] += score
 
             event_key = (dimension, value, polarity, item["source_type"])
@@ -303,10 +662,53 @@ class PreferenceService:
             if updated_at is None or item["created_at"] > updated_at:
                 updated_at = item["created_at"]
 
-        preferred_cities = self._resolved_top_values("destination", positive_scores, negative_scores)
-        transport_modes = self._resolved_top_values("transport", positive_scores, negative_scores)
-        pace_tags = self._resolved_top_values("pace", positive_scores, negative_scores)
-        interest_tags = self._resolved_top_values("interest", positive_scores, negative_scores)
+        active_locks = self._governance_state_map(
+            normalized_events,
+            activate_source_types={"manual_lock"},
+            deactivate_source_types={"manual_unlock"},
+        )
+        active_blacklist = self._governance_state_map(
+            normalized_events,
+            activate_source_types={"manual_avoid"},
+            deactivate_source_types={"manual_allow"},
+        )
+
+        self._apply_demote_scores(positive_scores, demote_scores)
+        self._apply_allow_scores(negative_scores, allow_scores)
+        self._apply_demote_labels(explicit_scores, inferred_scores, behavior_scores, demote_scores)
+        self._apply_allow_labels(explicit_scores, inferred_scores, behavior_scores, allow_scores)
+        self._apply_lock_bonus(
+            positive_scores,
+            explicit_scores,
+            active_locks=active_locks,
+            active_blacklist=active_blacklist,
+        )
+
+        locked_pairs = set(active_locks.keys()) - set(active_blacklist.keys())
+        preferred_cities = self._resolved_top_values(
+            "destination",
+            positive_scores,
+            negative_scores,
+            locked_pairs=locked_pairs,
+        )
+        transport_modes = self._resolved_top_values(
+            "transport",
+            positive_scores,
+            negative_scores,
+            locked_pairs=locked_pairs,
+        )
+        pace_tags = self._resolved_top_values(
+            "pace",
+            positive_scores,
+            negative_scores,
+            locked_pairs=locked_pairs,
+        )
+        interest_tags = self._resolved_top_values(
+            "interest",
+            positive_scores,
+            negative_scores,
+            locked_pairs=locked_pairs,
+        )
         negative_preferences = self._top_negative_labels(negative_scores)
         explicit_preferences = self._top_labels(explicit_scores)
         inferred_preferences = self._top_labels(inferred_scores)
@@ -322,9 +724,23 @@ class PreferenceService:
             pace_tags,
             interest_tags,
             negative_preferences,
-            len(normalized_events),
+            active_event_count,
         )
-        return PreferenceProfileView(
+        recommendation_hint = (
+            empty_hint
+            if not normalized_events
+            else self._hint(
+                preferred_cities,
+                budget_range,
+                transport_modes,
+                pace_tags,
+                interest_tags,
+                negative_preferences,
+                behavior_signals,
+                profile_strength,
+            )
+        )
+        return PreferenceLayerView(
             preferred_cities=preferred_cities,
             budget_range=budget_range,
             transport_modes=transport_modes,
@@ -337,16 +753,7 @@ class PreferenceService:
             profile_strength=profile_strength,
             budget_profile=budget_profile,
             recent_evidence=recent_evidence,
-            recommendation_hint=self._hint(
-                preferred_cities,
-                budget_range,
-                transport_modes,
-                pace_tags,
-                interest_tags,
-                negative_preferences,
-                behavior_signals,
-                profile_strength,
-            ),
+            recommendation_hint=recommendation_hint,
             updated_at=updated_at.isoformat() if updated_at else None,
         )
 
@@ -366,6 +773,8 @@ class PreferenceService:
                 polarity = event.polarity
                 confidence = event.confidence
                 weight = event.weight
+                conversation_id = None
+                event_id = None
             else:
                 expires_at = self._ensure_utc(event.expires_at) if event.expires_at else None
                 if expires_at and expires_at < self._ensure_utc(now):
@@ -378,9 +787,12 @@ class PreferenceService:
                 polarity = event.polarity
                 confidence = float(event.confidence or 0.8)
                 weight = float(event.weight or 1.0)
+                conversation_id = event.conversation_id
+                event_id = event.id
             score = weight * confidence * self._time_decay(created_at, now)
             normalized.append(
                 {
+                    "event_id": event_id,
                     "dimension": dimension,
                     "value": value,
                     "polarity": polarity,
@@ -390,6 +802,10 @@ class PreferenceService:
                     "score": score,
                     "created_at": created_at,
                     "amount": self._extract_amount(metadata),
+                    "metadata": metadata,
+                    "scope": str(metadata.get("scope") or ""),
+                    "conversation_id": conversation_id,
+                    "is_undone": bool(metadata.get("undone")),
                 }
             )
         return normalized
@@ -652,6 +1068,693 @@ class PreferenceService:
                     )
         return self._dedupe_signals(signals)
 
+    def _build_workspace_event_signals(
+        self,
+        action: str,
+        payload: dict,
+    ) -> list[PreferenceSignal]:
+        """把前端行为事件转换为可聚合的偏好信号。"""
+
+        signals: list[PreferenceSignal] = []
+        behavior_value = self._workspace_behavior_label(action)
+        if behavior_value:
+            signals.append(
+                PreferenceSignal(
+                    dimension="behavior",
+                    value=behavior_value,
+                    source_type=action,
+                    confidence=0.82 if action != "favorite_off" else 0.68,
+                    weight=SOURCE_WEIGHTS[action],
+                    raw_text=self._build_workspace_event_fallback_text(action, payload),
+                    metadata={"workspace_action": action},
+                )
+            )
+
+        combined_text = self._build_workspace_event_fallback_text(action, payload)
+        if combined_text:
+            for signal in self._extract_from_text(combined_text, source_type=action):
+                signal.weight = SOURCE_WEIGHTS[action]
+                signal.confidence = max(signal.confidence, 0.72)
+                signal.metadata = {**(signal.metadata or {}), "workspace_action": action}
+                signals.append(signal)
+
+        budget = self._parse_budget(payload.get("budget"))
+        if budget is not None and action in {"favorite_on", "share_plan", "history_open", "continue_optimize"}:
+            signals.append(
+                PreferenceSignal(
+                    dimension="budget",
+                    value=f"{budget}元",
+                    source_type=action,
+                    confidence=0.74,
+                    weight=SOURCE_WEIGHTS[action],
+                    raw_text=combined_text,
+                    metadata={"amount": budget, "workspace_action": action},
+                )
+            )
+        return self._dedupe_signals(signals)
+
+    def _build_timeline_item(
+        self,
+        grouped_events: list[tuple[TravelPreferenceEvent, dict]],
+    ) -> PreferenceTimelineItemView | None:
+        """把同一次操作聚合成一条前端时间线记录。"""
+
+        if not grouped_events:
+            return None
+
+        lead_event, lead_metadata = grouped_events[0]
+        is_undone = any(bool(metadata.get("undone")) for _, metadata in grouped_events)
+        undone_at = next(
+            (
+                str(metadata.get("undone_at"))
+                for _, metadata in grouped_events
+                if metadata.get("undone_at")
+            ),
+            None,
+        )
+        scope = self._timeline_scope(lead_event, lead_metadata)
+        return PreferenceTimelineItemView(
+            id=lead_event.id,
+            title=self._timeline_title(lead_event, lead_metadata),
+            description=self._timeline_description(lead_event, lead_metadata, grouped_events, scope, is_undone),
+            dimension=lead_event.dimension,
+            value=lead_event.value,
+            polarity=lead_event.polarity,
+            source_type=lead_event.source_type,
+            source_label=TIMELINE_SOURCE_LABELS.get(lead_event.source_type, lead_event.source_type),
+            scope=scope,
+            signal_count=len(grouped_events),
+            conversation_id=lead_event.conversation_id,
+            can_undo=not is_undone and self._can_undo_timeline_source(lead_event.source_type),
+            is_undone=is_undone,
+            created_at=self._ensure_utc(lead_event.created_at).isoformat(),
+            undone_at=undone_at,
+        )
+
+    def _timeline_scope(self, event: TravelPreferenceEvent, metadata: dict) -> str:
+        if str(metadata.get("scope") or "") == "session" or event.source_type in SESSION_SCOPED_SOURCE_TYPES:
+            return "session"
+        if event.source_type in CURRENT_CONVERSATION_TRANSIENT_SOURCES and event.conversation_id:
+            return "session"
+        if event.source_type in {
+            "favorite_on",
+            "favorite_off",
+            "share_plan",
+            "history_open",
+            "version_select",
+            "version_rollback",
+            "memory_open",
+            "audit_open",
+            "governance_open",
+            "blacklist_remove",
+            "profile_lock",
+            "profile_unlock",
+            "timeline_undo",
+        }:
+            return "behavior"
+        return "long_term"
+
+    def _timeline_title(self, event: TravelPreferenceEvent, metadata: dict) -> str:
+        value = self._timeline_display_value(event.dimension, event.value)
+        manual_action = str(metadata.get("feedback_action") or "")
+        workspace_action = str(metadata.get("workspace_action") or "")
+
+        if manual_action == "set_common" or event.source_type == "manual_prefer":
+            return f"设为常用偏好 · {value}"
+        if manual_action == "session_only" or event.source_type == "manual_session":
+            return f"{'仅本次避让' if event.polarity == 'negative' else '仅本次生效'} · {value}"
+        if manual_action == "avoid" or event.source_type == "manual_avoid":
+            return f"不再推荐 · {value}"
+        if manual_action == "remove_long_term" or event.source_type == "manual_demote":
+            return f"移出长期偏好 · {value}"
+        if workspace_action or event.source_type in UNDOABLE_SOURCE_TYPES:
+            if manual_action == "remove_avoid" or event.source_type == "manual_allow":
+                return f"移除黑名单 路 {value}"
+            if manual_action == "lock_long_term" or event.source_type == "manual_lock":
+                return f"锁定长期偏好 路 {value}"
+            if manual_action == "unlock_long_term" or event.source_type == "manual_unlock":
+                return f"解除长期锁定 路 {value}"
+            action_key = workspace_action or event.source_type
+            if action_key == "favorite_on":
+                return f"收藏方案 · {self._timeline_title_suffix(metadata, '收藏内容')}"
+            if action_key == "favorite_off":
+                return f"取消收藏 · {self._timeline_title_suffix(metadata, '收藏内容')}"
+            if action_key == "share_plan":
+                return f"分享方案 · {self._timeline_title_suffix(metadata, '当前方案')}"
+            if action_key == "history_open":
+                return f"打开历史方案 · {self._timeline_title_suffix(metadata, '历史方案')}"
+            if action_key == "version_rollback":
+                return f"回退版本 · {self._timeline_title_suffix(metadata, '历史版本')}"
+            if action_key == "version_select":
+                return f"查看版本 · {self._timeline_title_suffix(metadata, '方案版本')}"
+            if action_key == "continue_optimize":
+                return "继续优化当前方案"
+        if event.polarity == "negative":
+            if workspace_action == "memory_open" or event.source_type == "memory_open":
+                return "打开偏好画像中心"
+            if workspace_action == "audit_open" or event.source_type == "audit_open":
+                return "打开画像审计视图"
+            if workspace_action == "governance_open" or event.source_type == "governance_open":
+                return "打开偏好治理面板"
+            if workspace_action == "blacklist_remove" or event.source_type == "blacklist_remove":
+                return f"行为移除黑名单 路 {self._timeline_title_suffix(metadata, value)}"
+            if workspace_action == "profile_lock" or event.source_type == "profile_lock":
+                return f"行为锁定偏好 路 {self._timeline_title_suffix(metadata, value)}"
+            if workspace_action == "profile_unlock" or event.source_type == "profile_unlock":
+                return f"行为解除锁定 路 {self._timeline_title_suffix(metadata, value)}"
+            if workspace_action == "timeline_undo" or event.source_type == "timeline_undo":
+                return "撤销画像学习动作"
+            return f"识别到避让偏好 · {value}"
+        if event.polarity == "neutral":
+            return f"偏好降权 · {value}"
+        return f"{self._timeline_dimension_label(event.dimension)} · {value}"
+
+    def _timeline_description(
+        self,
+        event: TravelPreferenceEvent,
+        metadata: dict,
+        grouped_events: list[tuple[TravelPreferenceEvent, dict]],
+        scope: str,
+        is_undone: bool,
+    ) -> str:
+        parts: list[str] = []
+        if scope == "session":
+            parts.append("仅影响当前会话")
+        elif scope == "behavior":
+            parts.append("来自真实操作行为")
+        else:
+            parts.append("会进入长期偏好学习")
+
+        destination = self._clean_text(metadata.get("destination_city"), 40)
+        if destination:
+            parts.append(destination)
+        budget = self._parse_budget(metadata.get("budget"))
+        if budget is not None:
+            parts.append(f"预算 {budget} 元")
+        title = self._clean_text(metadata.get("title"), 80)
+        version_name = self._clean_text(metadata.get("version_name"), 80)
+        if version_name and version_name != title:
+            parts.append(version_name)
+        elif title:
+            parts.append(title)
+        if len(grouped_events) > 1:
+            parts.append(f"影响 {len(grouped_events)} 条画像信号")
+        if is_undone:
+            parts.append("已撤销，不再参与后续推荐")
+        summary = self._clean_text(metadata.get("summary"), 160)
+        if summary:
+            parts.append(summary)
+        return " · ".join(part for part in parts if part)
+
+    def _timeline_display_value(self, dimension: str, value: str) -> str:
+        if dimension == "avoidance":
+            return value.replace("避免", "").strip()
+        return value
+
+    def _timeline_title_suffix(self, metadata: dict, fallback: str) -> str:
+        return (
+            self._clean_text(metadata.get("title"), 60)
+            or self._clean_text(metadata.get("version_name"), 60)
+            or self._clean_text(metadata.get("destination_city"), 30)
+            or fallback
+        )
+
+    def _timeline_dimension_label(self, dimension: str) -> str:
+        mapping = {
+            "destination": "目的地偏好",
+            "transport": "交通偏好",
+            "pace": "旅行节奏",
+            "interest": "兴趣主题",
+            "avoidance": "避让偏好",
+            "budget": "预算偏好",
+            "budget_style": "预算风格",
+            "behavior": "行为信号",
+            "risk": "风险偏好",
+        }
+        return mapping.get(dimension, dimension)
+
+    def _can_undo_timeline_source(self, source_type: str) -> bool:
+        return source_type in UNDOABLE_SOURCE_TYPES
+
+    def _event_matches_operation(
+        self,
+        event: TravelPreferenceEvent,
+        operation_id: str,
+        *,
+        fallback_event_id: int,
+    ) -> bool:
+        if operation_id:
+            metadata = self._loads_json(event.metadata_json, {})
+            return str(metadata.get("operation_id") or "") == operation_id
+        return event.id == fallback_event_id
+
+    def _select_long_term_events(
+        self,
+        normalized_events: list[dict],
+        conversation_id: str | None,
+    ) -> list[dict]:
+        """长期层默认排除会话级事件，并在查看当前会话时避开本轮瞬时偏好。"""
+
+        selected: list[dict] = []
+        for item in normalized_events:
+            if item["scope"] == "session" or item["source_type"] in SESSION_SCOPED_SOURCE_TYPES:
+                continue
+            if (
+                conversation_id
+                and item["conversation_id"] == conversation_id
+                and item["source_type"] in CURRENT_CONVERSATION_TRANSIENT_SOURCES
+            ):
+                continue
+            selected.append(item)
+        return selected
+
+    def _select_session_events(
+        self,
+        normalized_events: list[dict],
+        conversation_id: str | None,
+    ) -> list[dict]:
+        """本次层优先围绕当前会话构建，也兼容只有临时纠偏时的场景。"""
+
+        now = utc_now()
+        selected: list[dict] = []
+        for item in normalized_events:
+            is_session_scope = item["scope"] == "session" or item["source_type"] in SESSION_SCOPED_SOURCE_TYPES
+            if conversation_id:
+                if item["conversation_id"] == conversation_id:
+                    selected.append(item)
+                    continue
+                if is_session_scope and item["conversation_id"] in {None, conversation_id}:
+                    selected.append(item)
+                continue
+            if not is_session_scope:
+                continue
+            if (self._ensure_utc(now) - item["created_at"]).total_seconds() <= 7 * 86400:
+                selected.append(item)
+        return selected
+
+    def _apply_demote_scores(
+        self,
+        positive_scores: dict[str, dict[str, float]],
+        demote_scores: dict[str, dict[str, float]],
+    ) -> None:
+        """“这不是我的长期偏好”只削弱长期正向偏好，不把它直接改成避让。"""
+
+        for dimension, mapping in demote_scores.items():
+            positives = positive_scores.get(dimension, {})
+            for value, score in mapping.items():
+                if value not in positives:
+                    continue
+                remaining = positives[value] - score * 1.15
+                if remaining <= 0.12:
+                    positives.pop(value, None)
+                else:
+                    positives[value] = remaining
+
+    def _apply_demote_labels(
+        self,
+        explicit_scores: dict[str, float],
+        inferred_scores: dict[str, float],
+        behavior_scores: dict[str, float],
+        demote_scores: dict[str, dict[str, float]],
+    ) -> None:
+        for dimension, mapping in demote_scores.items():
+            for value, score in mapping.items():
+                label = self._event_label(dimension, value, "positive")
+                for bucket in (explicit_scores, inferred_scores, behavior_scores):
+                    if label not in bucket:
+                        continue
+                    remaining = bucket[label] - score * 1.15
+                    if remaining <= 0.12:
+                        bucket.pop(label, None)
+                    else:
+                        bucket[label] = remaining
+
+    def _apply_allow_scores(
+        self,
+        negative_scores: dict[str, dict[str, float]],
+        allow_scores: dict[str, dict[str, float]],
+    ) -> None:
+        """把“移除黑名单”动作作用到负向偏好分数上。"""
+
+        for dimension, mapping in allow_scores.items():
+            negatives = negative_scores.get(dimension, {})
+            for value, score in mapping.items():
+                if value not in negatives:
+                    continue
+                remaining = negatives[value] - score * 1.12
+                if remaining <= 0.12:
+                    negatives.pop(value, None)
+                else:
+                    negatives[value] = remaining
+
+    def _apply_allow_labels(
+        self,
+        explicit_scores: dict[str, float],
+        inferred_scores: dict[str, float],
+        behavior_scores: dict[str, float],
+        allow_scores: dict[str, dict[str, float]],
+    ) -> None:
+        for dimension, mapping in allow_scores.items():
+            for value, score in mapping.items():
+                label = self._event_label(dimension, value, "negative")
+                for bucket in (explicit_scores, inferred_scores, behavior_scores):
+                    if label not in bucket:
+                        continue
+                    remaining = bucket[label] - score * 1.12
+                    if remaining <= 0.12:
+                        bucket.pop(label, None)
+                    else:
+                        bucket[label] = remaining
+
+    def _apply_lock_bonus(
+        self,
+        positive_scores: dict[str, dict[str, float]],
+        explicit_scores: dict[str, float],
+        *,
+        active_locks: dict[tuple[str, str], dict],
+        active_blacklist: dict[tuple[str, str], dict],
+    ) -> None:
+        """长期锁定会在聚合阶段给稳定偏好一个保留权重。"""
+
+        for key, state in active_locks.items():
+            if key in active_blacklist:
+                continue
+            dimension, value = key
+            bonus = max(1.25, float(state.get("score") or 0.0) * 0.82)
+            positive_scores[dimension][value] += bonus
+            explicit_scores[self._event_label(dimension, value, "positive")] += bonus
+
+    def _build_governance_views(
+        self,
+        normalized_events: list[dict],
+    ) -> tuple[list[PreferenceGovernanceItemView], list[PreferenceGovernanceItemView]]:
+        blacklist_map = self._governance_state_map(
+            normalized_events,
+            activate_source_types={"manual_avoid"},
+            deactivate_source_types={"manual_allow"},
+        )
+        locked_map = self._governance_state_map(
+            normalized_events,
+            activate_source_types={"manual_lock"},
+            deactivate_source_types={"manual_unlock"},
+        )
+        blacklist_items = self._governance_items_from_state(blacklist_map, kind="blacklist")
+        locked_items = self._governance_items_from_state(
+            {key: value for key, value in locked_map.items() if key not in blacklist_map},
+            kind="lock",
+        )
+        return blacklist_items, locked_items
+
+    def _governance_state_map(
+        self,
+        normalized_events: list[dict],
+        *,
+        activate_source_types: set[str],
+        deactivate_source_types: set[str],
+    ) -> dict[tuple[str, str], dict]:
+        """按最新事件推导某类治理状态是否仍然生效。"""
+
+        state: dict[tuple[str, str], dict] = {}
+        ordered = sorted(
+            normalized_events,
+            key=lambda item: (item["created_at"], item.get("event_id") or 0),
+        )
+        for item in ordered:
+            source_type = item["source_type"]
+            if source_type not in activate_source_types | deactivate_source_types:
+                continue
+            key = (item["dimension"], item["value"])
+            if source_type in activate_source_types:
+                state[key] = item
+            else:
+                state.pop(key, None)
+        return state
+
+    def _governance_items_from_state(
+        self,
+        state_map: dict[tuple[str, str], dict],
+        *,
+        kind: str,
+    ) -> list[PreferenceGovernanceItemView]:
+        items: list[PreferenceGovernanceItemView] = []
+        for (dimension, value), item in sorted(
+            state_map.items(),
+            key=lambda pair: pair[1]["created_at"],
+            reverse=True,
+        ):
+            label = (
+                f"避免{self._timeline_display_value(dimension, value)}"
+                if kind == "blacklist"
+                else self._timeline_display_value(dimension, value)
+            )
+            items.append(
+                PreferenceGovernanceItemView(
+                    dimension=dimension,
+                    value=value,
+                    label=label,
+                    source_type=item["source_type"],
+                    created_at=item["created_at"].isoformat(),
+                    note=self._audit_event_note(item),
+                )
+            )
+        return items
+
+    def _select_audit_events(
+        self,
+        normalized_events: list[dict],
+        conversation_id: str | None,
+    ) -> list[dict]:
+        """审计视图需要同时看到长期层和当前会话层。"""
+
+        selected: list[dict] = []
+        seen: set[tuple[str | None, str, str, str, str]] = set()
+        for item in self._select_session_events(normalized_events, conversation_id) + self._select_long_term_events(
+            normalized_events,
+            conversation_id,
+        ):
+            item_key = (
+                item.get("event_id"),
+                item["source_type"],
+                item["dimension"],
+                item["value"],
+                item["created_at"].isoformat(),
+            )
+            if item_key in seen:
+                continue
+            seen.add(item_key)
+            selected.append(item)
+        return sorted(selected, key=lambda item: (item["created_at"], item["score"]), reverse=True)
+
+    def _build_audit_item(
+        self,
+        item: dict,
+        *,
+        locked_map: dict[tuple[str, str], dict],
+        blacklist_map: dict[tuple[str, str], dict],
+    ) -> PreferenceAuditItemView:
+        key = (item["dimension"], item["value"])
+        scope = self._audit_scope(item)
+        return PreferenceAuditItemView(
+            id=item.get("event_id"),
+            dimension=item["dimension"],
+            dimension_label=self._timeline_dimension_label(item["dimension"]),
+            value=item["value"],
+            display_value=self._timeline_display_value(item["dimension"], item["value"]),
+            polarity=item["polarity"],
+            source_type=item["source_type"],
+            source_label=TIMELINE_SOURCE_LABELS.get(item["source_type"], item["source_type"]),
+            source_group=SOURCE_GROUPS.get(item["source_type"], "inferred"),
+            scope=scope,
+            score=round(float(item["score"]), 4),
+            confidence=round(float(item["confidence"]), 4),
+            weight=round(float(item["weight"]), 4),
+            created_at=item["created_at"].isoformat(),
+            conversation_id=item.get("conversation_id"),
+            is_locked=key in locked_map and key not in blacklist_map,
+            is_blacklisted=key in blacklist_map,
+            is_undone=bool(item.get("is_undone")),
+            note=self._audit_event_note(item),
+        )
+
+    def _build_audit_summary(
+        self,
+        items: list[PreferenceAuditItemView],
+        *,
+        locked_map: dict[tuple[str, str], dict],
+        blacklist_map: dict[tuple[str, str], dict],
+    ) -> PreferenceAuditSummaryView:
+        explicit_total = sum(1 for item in items if item.source_group == "explicit")
+        inferred_total = sum(1 for item in items if item.source_group == "inferred")
+        behavior_total = sum(1 for item in items if item.source_group == "behavior")
+        session_total = sum(1 for item in items if item.scope == "session")
+        long_term_total = sum(1 for item in items if item.scope == "long_term")
+        return PreferenceAuditSummaryView(
+            total_events=len(items),
+            explicit_total=explicit_total,
+            inferred_total=inferred_total,
+            behavior_total=behavior_total,
+            session_total=session_total,
+            long_term_total=long_term_total,
+            locked_total=len(locked_map),
+            blacklist_total=len(blacklist_map),
+        )
+
+    def _group_audit_items(
+        self,
+        items: list[PreferenceAuditItemView],
+        *,
+        key_getter,
+        label_getter,
+        limit_per_group: int,
+    ) -> list[PreferenceAuditGroupView]:
+        grouped: dict[str, list[PreferenceAuditItemView]] = defaultdict(list)
+        order: list[str] = []
+        for item in items:
+            key = str(key_getter(item))
+            if key not in grouped:
+                order.append(key)
+            grouped[key].append(item)
+        result: list[PreferenceAuditGroupView] = []
+        for key in order:
+            bucket_items = grouped[key]
+            label = str(label_getter(bucket_items[0])) if bucket_items else key
+            result.append(
+                PreferenceAuditGroupView(
+                    key=key,
+                    label=label,
+                    total=len(bucket_items),
+                    items=bucket_items[:limit_per_group],
+                )
+            )
+        return result
+
+    def _audit_scope(self, item: dict) -> str:
+        if item["scope"] == "session" or item["source_type"] in SESSION_SCOPED_SOURCE_TYPES:
+            return "session"
+        if item["source_type"] in {
+            "favorite_on",
+            "favorite_off",
+            "share_plan",
+            "history_open",
+            "version_select",
+            "version_rollback",
+            "continue_optimize",
+            "memory_open",
+            "audit_open",
+            "governance_open",
+            "blacklist_remove",
+            "profile_lock",
+            "profile_unlock",
+            "timeline_undo",
+        }:
+            return "behavior"
+        return "long_term"
+
+    def _audit_source_group_label(self, source_group: str) -> str:
+        mapping = {
+            "explicit": "显式设定",
+            "behavior": "行为学习",
+            "inferred": "模型推断",
+        }
+        return mapping.get(source_group, source_group)
+
+    def _audit_scope_label(self, scope: str) -> str:
+        mapping = {
+            "session": "本次会话",
+            "behavior": "行为侧",
+            "long_term": "长期记忆",
+        }
+        return mapping.get(scope, scope)
+
+    def _audit_event_note(self, item: dict) -> str | None:
+        metadata = item.get("metadata") or {}
+        return (
+            self._clean_text(metadata.get("summary"), 180)
+            or self._clean_text(metadata.get("title"), 120)
+            or self._clean_text(metadata.get("version_name"), 120)
+        )
+
+    def _manual_feedback_config(self, action: str, polarity_hint: str | None = None) -> tuple[str, str, int]:
+        mapping = {
+            "set_common": ("manual_prefer", "positive", 365 * 3),
+            "session_only": ("manual_session", "negative" if polarity_hint == "negative" else "positive", 3),
+            "avoid": ("manual_avoid", "negative", 365 * 3),
+            "remove_long_term": ("manual_demote", "neutral", 365 * 3),
+            "remove_avoid": ("manual_allow", "neutral", 365 * 3),
+            "lock_long_term": ("manual_lock", "positive", 365 * 5),
+            "unlock_long_term": ("manual_unlock", "neutral", 365 * 5),
+        }
+        if action not in mapping:
+            raise ValueError("invalid_preference_feedback")
+        return mapping[action]
+
+    def _normalize_feedback_action(self, action: str | None, polarity: str | None) -> str:
+        if action:
+            return action
+        if polarity == "positive":
+            return "set_common"
+        if polarity == "negative":
+            return "avoid"
+        raise ValueError("invalid_preference_feedback")
+
+    def _normalize_workspace_action(self, action: str) -> str | None:
+        allowed = {
+            "version_select",
+            "version_rollback",
+            "favorite_on",
+            "favorite_off",
+            "share_plan",
+            "history_open",
+            "continue_optimize",
+            "memory_open",
+            "audit_open",
+            "governance_open",
+            "blacklist_remove",
+            "profile_lock",
+            "profile_unlock",
+            "timeline_undo",
+        }
+        normalized = str(action or "").strip().lower()
+        return normalized if normalized in allowed else None
+
+    def _workspace_behavior_label(self, action: str) -> str:
+        mapping = {
+            "memory_open": "会进入画像中心复核长期记忆",
+            "audit_open": "会主动打开画像审计视图",
+            "governance_open": "会整理黑名单和锁定项",
+            "blacklist_remove": "会从黑名单中恢复候选偏好",
+            "profile_lock": "会锁定长期偏好",
+            "profile_unlock": "会解除长期偏好锁定",
+            "timeline_undo": "会撤销画像学习动作",
+            "version_select": "会回看多版本方案",
+            "version_rollback": "偏好从历史版本继续优化",
+            "favorite_on": "会收藏重点方案",
+            "favorite_off": "会主动清理收藏",
+            "share_plan": "愿意分享成熟方案",
+            "history_open": "常从历史方案继续优化",
+            "continue_optimize": "偏好二次优化与精修",
+        }
+        return mapping.get(action, action)
+
+    def _build_workspace_event_fallback_text(self, action: str, payload: dict) -> str:
+        parts = [
+            self._workspace_behavior_label(action),
+            self._clean_text(payload.get("title"), 160) if isinstance(payload, dict) else None,
+            self._clean_text(payload.get("summary"), 400) if isinstance(payload, dict) else None,
+            self._clean_text(payload.get("destination_city"), 60) if isinstance(payload, dict) else None,
+            self._clean_text(payload.get("start_date"), 40) if isinstance(payload, dict) else None,
+            self._clean_text(payload.get("version_name"), 80) if isinstance(payload, dict) else None,
+            self._clean_text(payload.get("reason"), 200) if isinstance(payload, dict) else None,
+        ]
+        if isinstance(payload, dict):
+            tags = payload.get("tags") or []
+            if isinstance(tags, list):
+                parts.extend(self._clean_text(item, 40) for item in tags[:8])
+            budget = self._parse_budget(payload.get("budget"))
+            if budget is not None:
+                parts.append(f"预算 {budget} 元")
+        return "\n".join(str(part) for part in parts if part)
+
     def _profile_setting_events(self, user: User | None) -> list[PreferenceSignal]:
         if user is None or not user.travel_style:
             return []
@@ -717,25 +1820,27 @@ class PreferenceService:
         profile: TravelPreferenceProfile,
         aggregated: PreferenceProfileView,
     ) -> None:
+        # 旧快照只保留长期层，避免把“仅本次生效”的临时偏好回灌成长期画像。
+        snapshot = aggregated.long_term_profile or aggregated
         profile.preferred_cities_json = json.dumps(
-            {value: index + 1 for index, value in enumerate(aggregated.preferred_cities)},
+            {value: index + 1 for index, value in enumerate(snapshot.preferred_cities)},
             ensure_ascii=False,
         )
         profile.transport_modes_json = json.dumps(
-            {value: index + 1 for index, value in enumerate(aggregated.transport_modes)},
+            {value: index + 1 for index, value in enumerate(snapshot.transport_modes)},
             ensure_ascii=False,
         )
         profile.pace_tags_json = json.dumps(
-            {value: index + 1 for index, value in enumerate(aggregated.pace_tags)},
+            {value: index + 1 for index, value in enumerate(snapshot.pace_tags)},
             ensure_ascii=False,
         )
         profile.interest_tags_json = json.dumps(
-            {value: index + 1 for index, value in enumerate(aggregated.interest_tags)},
+            {value: index + 1 for index, value in enumerate(snapshot.interest_tags)},
             ensure_ascii=False,
         )
         budget_values = [
             item.median
-            for item in [aggregated.budget_profile]
+            for item in [snapshot.budget_profile]
             if item and item.median is not None
         ]
         profile.budget_values_json = json.dumps(budget_values, ensure_ascii=False)
@@ -793,16 +1898,21 @@ class PreferenceService:
         dimension: str,
         positive_scores: dict[str, dict[str, float]],
         negative_scores: dict[str, dict[str, float]],
+        locked_pairs: set[tuple[str, str]] | None = None,
         limit: int = 5,
     ) -> list[str]:
         resolved: list[tuple[str, float]] = []
+        locked_pairs = locked_pairs or set()
         positives = positive_scores.get(dimension, {})
         negatives = negative_scores.get(dimension, {})
         for value, score in positives.items():
             negative_score = negatives.get(value, 0.0)
-            if negative_score >= score * 0.9:
+            is_locked = (dimension, value) in locked_pairs
+            if negative_score >= score * 0.9 and not is_locked:
                 continue
-            resolved.append((value, score - negative_score * 0.35))
+            penalty = negative_score * (0.18 if is_locked else 0.35)
+            boost = 1.05 if is_locked else 0.0
+            resolved.append((value, score - penalty + boost))
         return [value for value, _ in sorted(resolved, key=lambda item: item[1], reverse=True)[:limit]]
 
     def _top_labels(self, scores: dict[str, float], limit: int = 6) -> list[str]:

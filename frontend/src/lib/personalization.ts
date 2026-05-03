@@ -15,14 +15,15 @@ export function buildPlanningPromptCards(
   user: LocalUser | null,
 ): PlanningPromptCard[] {
   // 把长期画像转换成可以直接点击使用的规划起手动作。
-  const budget = profile?.budget_range
-    || (profile?.budget_profile?.median ? `约 ${profile.budget_profile.median} 元` : "预算平衡");
-  const transport = profile?.transport_modes[0] || "高铁";
-  const pace = profile?.pace_tags[0] || "轻松";
-  const interest = profile?.interest_tags.slice(0, 2).join("、") || "城市漫游、美食";
-  const city = profile?.preferred_cities[0] || user?.home_city || "一个国内城市";
-  const negativeClause = profile?.negative_preferences.length
-    ? `并尽量避开 ${profile.negative_preferences.slice(0, 2).join("、")}`
+  const baseProfile = resolveLongTermProfile(profile) || profile;
+  const budget = baseProfile?.budget_range
+    || (baseProfile?.budget_profile?.median ? `约 ${baseProfile.budget_profile.median} 元` : "预算平衡");
+  const transport = baseProfile?.transport_modes[0] || "高铁";
+  const pace = baseProfile?.pace_tags[0] || "轻松";
+  const interest = baseProfile?.interest_tags.slice(0, 2).join("、") || "城市漫游、美食";
+  const city = baseProfile?.preferred_cities[0] || user?.home_city || "一个国内城市";
+  const negativeClause = baseProfile?.negative_preferences.length
+    ? `并尽量避开 ${baseProfile.negative_preferences.slice(0, 2).join("、")}`
     : "并尽量减少折返与无效通勤";
 
   if (!profile) {
@@ -93,12 +94,13 @@ export function buildPlanningPromptCards(
 export function buildPlanningHighlights(profile: PreferenceProfile | null, limit = 8): string[] {
   // 提取最有辨识度的偏好标签，供规划页和输入区复用。
   if (!profile) return [];
+  const baseProfile = resolveLongTermProfile(profile) || profile;
   const merged = [
-    ...profile.preferred_cities,
-    ...profile.transport_modes,
-    ...profile.pace_tags,
-    ...profile.interest_tags,
-    ...profile.explicit_preferences,
+    ...baseProfile.preferred_cities,
+    ...baseProfile.transport_modes,
+    ...baseProfile.pace_tags,
+    ...baseProfile.interest_tags,
+    ...baseProfile.explicit_preferences,
   ];
   return Array.from(new Set(merged.filter(Boolean))).slice(0, limit);
 }
@@ -122,7 +124,9 @@ export function buildWelcomeMessageContent(
 
   const name = user.display_name || user.username || "当前用户";
   const highlights = buildPlanningHighlights(profile, 4);
-  const negatives = profile?.negative_preferences.slice(0, 2) || [];
+  const longTerm = resolveLongTermProfile(profile) || profile;
+  const session = profile?.session_profile || null;
+  const negatives = longTerm?.negative_preferences.slice(0, 2) || [];
 
   if (profile && (highlights.length || negatives.length || profile.budget_range)) {
     const lines = [
@@ -133,11 +137,14 @@ export function buildWelcomeMessageContent(
     if (highlights.length) {
       lines.push(`- 当前优先线索：${highlights.join("、")}`);
     }
-    if (profile.budget_range) {
-      lines.push(`- 常用预算区间：${profile.budget_range}`);
+    if (longTerm?.budget_range || profile.budget_range) {
+      lines.push(`- 常用预算区间：${longTerm?.budget_range || profile.budget_range}`);
     }
     if (negatives.length) {
       lines.push(`- 需要优先避让：${negatives.join("、")}`);
+    }
+    if (session?.recent_evidence?.length) {
+      lines.push(`- 本次偏好：${session.recommendation_hint}`);
     }
 
     lines.push("- 你现在可以直接说新的目的地、日期、预算，或使用下方个性化起手建议。");
@@ -160,4 +167,8 @@ export function resolveProfileStrengthMeta(profile: PreferenceProfile | null) {
     return { label: "持续收敛", description: "画像正在快速成形，建议已经开始带有明显个性。", key };
   }
   return { label: "初步学习", description: "系统刚开始学习你的真实偏好。", key: "new" };
+}
+
+function resolveLongTermProfile(profile: PreferenceProfile | null) {
+  return profile?.long_term_profile || null;
 }

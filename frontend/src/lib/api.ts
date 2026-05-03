@@ -17,8 +17,13 @@ import type {
   PlanExportResult,
   PlanVersion,
   PlanVersionCompare,
+  PreferenceBehaviorEventPayload,
+  PreferenceAuditResult,
   PreferenceFeedbackPayload,
   PreferenceProfile,
+  PreferenceTimelineResult,
+  PreferenceTimelineUndoPayload,
+  PreferenceTimelineUndoResult,
   SharedPlan,
   StreamStage,
   ToolStatus,
@@ -406,12 +411,54 @@ export async function importGuestSession(payload: GuestSessionImportPayload): Pr
   return unwrapRaw(api.post<ApiResponse<GuestSessionImportResult>>("/conversations/import-guest-session", payload));
 }
 
-export async function fetchPreferenceProfile(): Promise<PreferenceProfile> {
-  return unwrapRaw(api.get<ApiResponse<PreferenceProfile>>("/preference-profile"));
+export async function fetchPreferenceProfile(conversationId?: string | null): Promise<PreferenceProfile> {
+  return unwrapRaw(
+    api.get<ApiResponse<PreferenceProfile>>("/preference-profile", {
+      params: conversationId ? { conversation_id: conversationId } : undefined,
+    }),
+  );
 }
 
 export async function submitPreferenceFeedback(payload: PreferenceFeedbackPayload): Promise<PreferenceProfile> {
   return unwrapRaw(api.post<ApiResponse<PreferenceProfile>>("/preference-profile/feedback", payload));
+}
+
+export async function trackPreferenceBehaviorEvent(payload: PreferenceBehaviorEventPayload): Promise<PreferenceProfile> {
+  return unwrapRaw(api.post<ApiResponse<PreferenceProfile>>("/preference-profile/events", payload));
+}
+
+export async function fetchPreferenceTimeline(
+  conversationId?: string | null,
+  limit = 40,
+): Promise<PreferenceTimelineResult> {
+  return unwrapRaw(
+    api.get<ApiResponse<PreferenceTimelineResult>>("/preference-profile/timeline", {
+      params: {
+        limit,
+        ...(conversationId ? { conversation_id: conversationId } : {}),
+      },
+    }),
+  );
+}
+
+export async function fetchPreferenceAudit(
+  conversationId?: string | null,
+  limitPerGroup = 12,
+): Promise<PreferenceAuditResult> {
+  return unwrapRaw(
+    api.get<ApiResponse<PreferenceAuditResult>>("/preference-profile/audit", {
+      params: {
+        limit_per_group: limitPerGroup,
+        ...(conversationId ? { conversation_id: conversationId } : {}),
+      },
+    }),
+  );
+}
+
+export async function undoPreferenceTimelineEvent(
+  payload: PreferenceTimelineUndoPayload,
+): Promise<PreferenceTimelineUndoResult> {
+  return unwrapRaw(api.post<ApiResponse<PreferenceTimelineUndoResult>>("/preference-profile/timeline/undo", payload));
 }
 
 export async function fetchUsers(): Promise<LocalUser[]> {

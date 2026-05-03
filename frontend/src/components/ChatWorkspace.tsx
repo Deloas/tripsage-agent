@@ -64,7 +64,7 @@ interface ChatWorkspaceProps {
   onSubmit: (message: string) => void;
   onOptimizeItinerary: (editedPlan: Record<string, unknown>) => void;
   onDecisionModuleAction: (module: DecisionModule, action: "accept" | "ignore" | "regenerate") => void;
-  onVersionSelect: (versionId: string) => void;
+  onVersionSelect: (versionId: string, reason?: "browse" | "rollback") => void;
   onExportVersion: (versionId: string, format: "markdown" | "html") => void;
   onShareVersion: (versionId: string) => void;
 }
@@ -991,7 +991,7 @@ function PlanVersionRail({
   canShareVersion: boolean;
   guestMode: boolean;
   onRequireLogin: () => void;
-  onSelect: (versionId: string) => void;
+  onSelect: (versionId: string, reason?: "browse" | "rollback") => void;
   onExport: (versionId: string, format: "markdown" | "html") => void;
   onShare: (versionId: string) => void;
 }) {

@@ -25,3 +25,10 @@ Thumbs.db
 # Data cache / runtime
 data/chroma/
 data/tripsage.db
+logs/*.log
+
+# Delivery artifacts
+history-preview-check.png
+memory-preview-check.png
+user-preview-check.png
+*-preview-check.png

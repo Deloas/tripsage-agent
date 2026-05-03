@@ -163,14 +163,166 @@ export interface PreferenceProfile {
     created_at: string;
   }>;
   recommendation_hint: string;
+  long_term_profile: PreferenceLayer;
+  session_profile: PreferenceLayer;
+  blacklist_items?: PreferenceGovernanceItem[];
+  locked_items?: PreferenceGovernanceItem[];
+  updated_at?: string | null;
+}
+
+export interface PreferenceGovernanceItem {
+  dimension: string;
+  value: string;
+  label: string;
+  source_type: string;
+  created_at: string;
+  note?: string | null;
+}
+
+export interface PreferenceLayer {
+  preferred_cities: string[];
+  budget_range?: string | null;
+  transport_modes: string[];
+  pace_tags: string[];
+  interest_tags: string[];
+  negative_preferences: string[];
+  explicit_preferences: string[];
+  inferred_preferences: string[];
+  behavior_signals: string[];
+  profile_strength: "new" | "growing" | "strong" | string;
+  budget_profile?: {
+    median?: number | null;
+    lower_bound?: number | null;
+    upper_bound?: number | null;
+    sensitivity?: string | null;
+  } | null;
+  recent_evidence: Array<{
+    dimension: string;
+    value: string;
+    polarity: string;
+    source_type: string;
+    confidence: number;
+    weight: number;
+    created_at: string;
+  }>;
+  recommendation_hint: string;
   updated_at?: string | null;
 }
 
 export interface PreferenceFeedbackPayload {
   dimension: string;
   value: string;
-  polarity: "positive" | "negative";
+  action?:
+    | "set_common"
+    | "session_only"
+    | "avoid"
+    | "remove_long_term"
+    | "remove_avoid"
+    | "lock_long_term"
+    | "unlock_long_term";
+  polarity?: "positive" | "negative";
   conversation_id?: string | null;
+}
+
+export interface PreferenceBehaviorEventPayload {
+  action:
+    | "version_select"
+    | "version_rollback"
+    | "favorite_on"
+    | "favorite_off"
+    | "share_plan"
+    | "history_open"
+    | "continue_optimize"
+    | "memory_open"
+    | "audit_open"
+    | "governance_open"
+    | "blacklist_remove"
+    | "profile_lock"
+    | "profile_unlock"
+    | "timeline_undo";
+  payload?: Record<string, unknown>;
+  conversation_id?: string | null;
+}
+
+export interface PreferenceTimelineItem {
+  id: number;
+  title: string;
+  description: string;
+  dimension: string;
+  value: string;
+  polarity: string;
+  source_type: string;
+  source_label: string;
+  scope: "long_term" | "session" | "behavior" | string;
+  signal_count: number;
+  conversation_id?: string | null;
+  can_undo: boolean;
+  is_undone: boolean;
+  created_at: string;
+  undone_at?: string | null;
+}
+
+export interface PreferenceTimelineResult {
+  items: PreferenceTimelineItem[];
+  total: number;
+}
+
+export interface PreferenceTimelineUndoPayload {
+  event_id: number;
+  conversation_id?: string | null;
+}
+
+export interface PreferenceTimelineUndoResult {
+  profile: PreferenceProfile;
+  timeline: PreferenceTimelineResult;
+  undone_event_id: number;
+}
+
+export interface PreferenceAuditItem {
+  id?: number | null;
+  dimension: string;
+  dimension_label: string;
+  value: string;
+  display_value: string;
+  polarity: string;
+  source_type: string;
+  source_label: string;
+  source_group: string;
+  scope: string;
+  score: number;
+  confidence: number;
+  weight: number;
+  created_at: string;
+  conversation_id?: string | null;
+  is_locked: boolean;
+  is_blacklisted: boolean;
+  is_undone: boolean;
+  note?: string | null;
+}
+
+export interface PreferenceAuditGroup {
+  key: string;
+  label: string;
+  total: number;
+  items: PreferenceAuditItem[];
+}
+
+export interface PreferenceAuditSummary {
+  total_events: number;
+  explicit_total: number;
+  inferred_total: number;
+  behavior_total: number;
+  session_total: number;
+  long_term_total: number;
+  locked_total: number;
+  blacklist_total: number;
+}
+
+export interface PreferenceAuditResult {
+  summary: PreferenceAuditSummary;
+  by_dimension: PreferenceAuditGroup[];
+  by_source: PreferenceAuditGroup[];
+  by_scope: PreferenceAuditGroup[];
 }
 
 export interface LocalUser {

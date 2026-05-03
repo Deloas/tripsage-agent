@@ -44,6 +44,7 @@ import {
   savePlanVersion,
   streamChat,
   submitPreferenceFeedback,
+  trackPreferenceBehaviorEvent,
   updateConversation,
   updateMyProfile,
 } from "./lib/api";
@@ -60,6 +61,7 @@ import type {
   LocalUser,
   PlanVersion,
   PlanVersionCompare,
+  PreferenceBehaviorEventPayload,
   PreferenceFeedbackPayload,
   PreferenceProfile,
   RailwayTrain,
@@ -324,15 +326,16 @@ export default function App() {
     }
   }
 
-  async function refreshWorkspaceMemory(force = false) {
+  async function refreshWorkspaceMemory(force = false, profileConversationId?: string | null) {
     if (!force && !currentUser) {
       setConversations([]);
       setPreferenceProfile(null);
       return;
     }
+    const targetConversationId = profileConversationId ?? conversationId ?? null;
     const [history, profile, authState] = await Promise.all([
       fetchConversations().catch(() => []),
-      fetchPreferenceProfile().catch(() => null),
+      fetchPreferenceProfile(targetConversationId).catch(() => null),
       fetchCurrentUser().catch(() => null),
     ]);
     setConversations(history);
@@ -367,6 +370,16 @@ export default function App() {
     }
   }
 
+  async function recordPreferenceBehavior(event: PreferenceBehaviorEventPayload) {
+    // 游客模式不写入画像行为事件，避免把临时浏览器状态误记成长期偏好。
+    if (!currentUser) return;
+    const nextProfile = await trackPreferenceBehaviorEvent({
+      ...event,
+      conversation_id: event.conversation_id ?? conversationId ?? null,
+    });
+    setPreferenceProfile(nextProfile);
+  }
+
   async function handlePrompt(prompt: string, context: Record<string, unknown> = {}) {
     setMessages((current) => [...current, { role: "user", content: prompt }]);
     setStreamStages([]);
@@ -399,7 +412,7 @@ export default function App() {
             setMessages((current) => [...current, { role: "assistant", content: response.answer }]);
             setStreamStages((current) => current.map((item) => ({ ...item, status: "done" })));
             if (currentUser) {
-              void refreshWorkspaceMemory();
+              void refreshWorkspaceMemory(false, response.conversation_id);
             }
           },
           onError: (message) => {
@@ -485,7 +498,10 @@ export default function App() {
     setMessages(buildWelcomeMessages(user, recommendationHint, profile));
   }
 
-  async function handleOpenConversation(conversationIdToOpen: string) {
+  async function handleOpenConversation(
+    conversationIdToOpen: string,
+    options?: { trackBehavior?: boolean },
+  ) {
     const [detail, versions] = await Promise.all([
       fetchConversationDetail(conversationIdToOpen),
       fetchPlanVersions(conversationIdToOpen).catch(() => []),
@@ -508,12 +524,42 @@ export default function App() {
     setActiveVersionId(latestVersion?.id || null);
     setLatest(latestVersion?.response || null);
     setHistoryOpen(false);
+
+    if (options?.trackBehavior) {
+      const summary = conversations.find((item) => item.id === conversationIdToOpen);
+      void recordPreferenceBehavior({
+        action: "history_open",
+        conversation_id: conversationIdToOpen,
+        payload: {
+          title: summary?.title || detail.title || "历史方案",
+          destination_city: summary?.destination_city || detail.destination_city || null,
+          budget: summary?.budget || detail.budget || null,
+          start_date: summary?.start_date || detail.start_date || null,
+          tags: summary?.tags || detail.tags || [],
+          summary: summary?.latest_message || detail.messages[detail.messages.length - 1]?.content || "",
+        },
+      }).catch(() => undefined);
+    }
   }
 
   async function handleUpdateConversation(conversationIdToUpdate: string, payload: ConversationUpdatePayload) {
     if (!currentUser) return;
     const updated = await updateConversation(conversationIdToUpdate, payload);
     setConversations((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    if (typeof payload.is_favorite === "boolean") {
+      void recordPreferenceBehavior({
+        action: payload.is_favorite ? "favorite_on" : "favorite_off",
+        conversation_id: conversationIdToUpdate,
+        payload: {
+          title: updated.title || "历史方案",
+          destination_city: updated.destination_city || null,
+          budget: updated.budget || null,
+          start_date: updated.start_date || null,
+          tags: updated.tags || [],
+          summary: updated.latest_message || "",
+        },
+      }).catch(() => undefined);
+    }
   }
 
   async function handleDeleteConversation(conversationIdToDelete: string) {
@@ -552,6 +598,13 @@ export default function App() {
 
   function handleOptimizeItinerary(editedPlan: Record<string, unknown>) {
     const prompt = "请基于我刚刚手动修改后的行程草稿，重新优化交通衔接、雨天备选、预算控制和行程强度，并输出一版更稳妥的可执行方案。";
+    void recordPreferenceBehavior({
+      action: "continue_optimize",
+      payload: {
+        title: "手动编辑后二次优化",
+        summary: "用户对日程、交通或预算草稿做了调整，并继续请求优化。",
+      },
+    }).catch(() => undefined);
     void handlePrompt(prompt, { edited_plan: editedPlan });
   }
 
@@ -576,13 +629,24 @@ export default function App() {
     }
   }
 
-  function handleSelectVersion(versionIdToSelect: string) {
+  function handleSelectVersion(versionIdToSelect: string, reason: "browse" | "rollback" = "browse") {
     const version = planVersions.find((item) => item.id === versionIdToSelect);
     if (!version) return;
     setActiveVersionId(versionIdToSelect);
     setLatest(version.response);
     setRailwayWorkspaceDraft(null);
     setDecisionModuleStates({});
+    void recordPreferenceBehavior({
+      action: reason === "rollback" ? "version_rollback" : "version_select",
+      conversation_id: version.response.conversation_id || conversationId || null,
+      payload: {
+        version_name: version.name,
+        reason: version.reason,
+        title: version.name,
+        summary: version.response.answer,
+        destination_city: extractDestination(version.response, [version]) || null,
+      },
+    }).catch(() => undefined);
   }
 
   async function handleExportVersion(versionIdToExport: string, format: "markdown" | "html") {
@@ -599,10 +663,25 @@ export default function App() {
 
   async function handleShareVersion(versionIdToShare: string) {
     if (!currentUser) return;
+    const version = planVersions.find((item) => item.id === versionIdToShare);
     const result = await createSharedPlan(versionIdToShare);
     const url = `${window.location.origin}${window.location.pathname}#/share/${result.id}`;
     setShareUrl(url);
     await navigator.clipboard?.writeText(url).catch(() => undefined);
+    if (version) {
+      void recordPreferenceBehavior({
+        action: "share_plan",
+        conversation_id: version.response.conversation_id || conversationId || null,
+        payload: {
+          title: version.name,
+          version_name: version.name,
+          reason: version.reason,
+          summary: version.response.answer,
+          destination_city: extractDestination(version.response, [version]) || null,
+          tags: version.response.cards?.map((item) => item.title).filter(Boolean).slice(0, 6) || [],
+        },
+      }).catch(() => undefined);
+    }
   }
 
   function handleRailwayWorkspaceSync(draft: RailwayWorkspaceDraft | null) {
@@ -612,6 +691,13 @@ export default function App() {
   function handleApplyRailwayWorkspaceDraft() {
     if (!railwayWorkspaceDraft) return;
     setWorkspaceView("planning");
+    void recordPreferenceBehavior({
+      action: "continue_optimize",
+      payload: {
+        title: "铁路工作台回写规划",
+        summary: railwayWorkspaceDraft.summary,
+      },
+    }).catch(() => undefined);
     void handlePrompt(buildAppRailwayWorkspacePrompt(railwayWorkspaceDraft), {
       railway_workspace_draft: railwayWorkspaceDraft,
     });
@@ -912,6 +998,7 @@ export default function App() {
             currentUser={currentUser}
             conversations={conversations}
             profile={preferenceProfile}
+            activeConversationId={conversationId ?? null}
             feedbackLoading={preferenceFeedbackLoading}
             onOpenHistory={() => {
               if (currentUser) {
@@ -926,6 +1013,8 @@ export default function App() {
               setUserOpen(true);
             }}
             onPreferenceFeedback={handlePreferenceFeedback}
+            onBehaviorEvent={recordPreferenceBehavior}
+            onProfileReplace={setPreferenceProfile}
           />
         ) : null}
           </section>
@@ -984,7 +1073,7 @@ export default function App() {
           }
           setUserOpen(true);
         }}
-        onOpenConversation={handleOpenConversation}
+        onOpenConversation={(id) => void handleOpenConversation(id, { trackBehavior: true })}
         onUpdateConversation={handleUpdateConversation}
         onDeleteConversation={handleDeleteConversation}
       />
@@ -1315,7 +1404,7 @@ function PlanningWorkbench({
   onSubmit: (message: string) => void;
   onOptimizeItinerary: (editedPlan: Record<string, unknown>) => void;
   onDecisionModuleAction: (module: DecisionModule, action: "accept" | "ignore" | "regenerate") => void;
-  onVersionSelect: (versionId: string) => void;
+  onVersionSelect: (versionId: string, reason?: "browse" | "rollback") => void;
   onExportVersion: (versionId: string, format: "markdown" | "html") => void;
   onShareVersion: (versionId: string) => void;
 }) {
@@ -2160,7 +2249,7 @@ function VersionWorkbench({
   shareUrl: string | null;
   guestMode: boolean;
   canShareVersion: boolean;
-  onSelectVersion: (versionId: string) => void;
+  onSelectVersion: (versionId: string, reason?: "browse" | "rollback") => void;
   onExportVersion: (versionId: string, format: "markdown" | "html") => void;
   onShareVersion: (versionId: string) => void;
   onOpenUserCenter: () => void;
@@ -2231,7 +2320,7 @@ function VersionWorkbench({
                   <em><DatabaseZap size={12} />{version.response.tool_calls.length} 工具</em>
                 </div>
                 <div className="version-gallery-actions">
-                  <button type="button" className="secondary-action" onClick={() => onSelectVersion(version.id)}>设为当前</button>
+                  <button type="button" className="secondary-action" onClick={() => onSelectVersion(version.id, "browse")}>设为当前</button>
                   <button
                     type="button"
                     className="secondary-action"
@@ -2265,7 +2354,7 @@ function VersionWorkbench({
                         type="button"
                         className="primary-action"
                         onClick={() => {
-                          onSelectVersion(version.id);
+                          onSelectVersion(version.id, "rollback");
                           setPendingRollbackId(null);
                         }}
                       >
@@ -2310,14 +2399,14 @@ function VersionWorkbench({
               <strong>{pendingRollbackVersion.name}</strong>
             </div>
             <div className="version-rollback-actions">
-              <button
-                type="button"
-                className="primary-action"
-                onClick={() => {
-                  onSelectVersion(pendingRollbackVersion.id);
-                  setPendingRollbackId(null);
-                }}
-              >
+                <button
+                  type="button"
+                  className="primary-action"
+                  onClick={() => {
+                    onSelectVersion(pendingRollbackVersion.id, "rollback");
+                    setPendingRollbackId(null);
+                  }}
+                >
                 立即回切
               </button>
               <button type="button" className="secondary-action" onClick={() => setPendingRollbackId(null)}>
@@ -2336,19 +2425,25 @@ function MemoryWorkbench({
   currentUser,
   conversations,
   profile,
+  activeConversationId,
   feedbackLoading,
   onOpenHistory,
   onOpenUserCenter,
   onPreferenceFeedback,
+  onBehaviorEvent,
+  onProfileReplace,
 }: {
   guestMode: boolean;
   currentUser: LocalUser | null;
   conversations: ConversationSummary[];
   profile: PreferenceProfile | null;
+  activeConversationId?: string | null;
   feedbackLoading: boolean;
   onOpenHistory: () => void;
   onOpenUserCenter: () => void;
   onPreferenceFeedback: (payload: PreferenceFeedbackPayload) => Promise<void>;
+  onBehaviorEvent: (payload: PreferenceBehaviorEventPayload) => Promise<void>;
+  onProfileReplace: (profile: PreferenceProfile) => void;
 }) {
   return (
     <PreferenceProfileWorkbench
@@ -2356,10 +2451,13 @@ function MemoryWorkbench({
       currentUser={currentUser}
       conversations={conversations}
       profile={profile}
+      activeConversationId={activeConversationId}
       feedbackLoading={feedbackLoading}
       onOpenHistory={onOpenHistory}
       onOpenUserCenter={onOpenUserCenter}
       onPreferenceFeedback={onPreferenceFeedback}
+      onBehaviorEvent={onBehaviorEvent}
+      onProfileReplace={onProfileReplace}
     />
   );
 }
