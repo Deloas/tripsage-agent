@@ -2,6 +2,8 @@ import axios, { AxiosError, type AxiosInstance, type AxiosResponse, type Interna
 
 import type {
   ApiResponse,
+  AiMapWorkbenchResult,
+  AmapClientConfig,
   AuthResult,
   AuthSession,
   AuthState,
@@ -12,6 +14,7 @@ import type {
   GuestSessionImportPayload,
   GuestSessionImportResult,
   GuideDetail,
+  GuideRoutePreviewResult,
   GuideImportRecordItem,
   GuideImportTaskItem,
   GuideLinkImportResult,
@@ -34,7 +37,9 @@ import type {
   PreferenceTimelineUndoResult,
   SharedPlan,
   StreamStage,
+  StructuredTravelPlan,
   ToolStatus,
+  RailwayQueryResult,
   UserProfileUpdatePayload,
 } from "./types";
 
@@ -415,6 +420,14 @@ export async function fetchGuideDetail(guideId: number): Promise<GuideDetail> {
   return unwrapRaw(api.get<ApiResponse<GuideDetail>>(`/guides/${guideId}`));
 }
 
+export async function fetchGuideRoutePreview(guideId: number, mode = "driving"): Promise<GuideRoutePreviewResult> {
+  return unwrapRaw(
+    api.get<ApiResponse<GuideRoutePreviewResult>>(`/guides/${guideId}/mobility/route-preview`, {
+      params: { mode },
+    }),
+  );
+}
+
 export async function updateGuide(guideId: number, payload: GuideUpdatePayload): Promise<GuideUpdateResult> {
   return unwrapRaw(api.put<ApiResponse<GuideUpdateResult>>(`/guides/${guideId}`, payload));
 }
@@ -440,6 +453,32 @@ export async function fetchGuideImportRecords(): Promise<GuideImportRecordItem[]
 
 export async function deleteGuideImportRecord(recordId: number): Promise<GuideImportRecordItem & { deleted: boolean }> {
   return unwrapRaw(api.delete<ApiResponse<GuideImportRecordItem & { deleted: boolean }>>(`/guides/import-records/${recordId}`));
+}
+
+export async function queryRailway(payload: {
+  origin: string;
+  destination: string;
+  date: string;
+}): Promise<RailwayQueryResult> {
+  return unwrapRaw(api.post<ApiResponse<RailwayQueryResult>>("/tools/railway", payload, { timeout: 60000 }));
+}
+
+export async function fetchAmapClientConfig(): Promise<AmapClientConfig> {
+  return unwrapRaw(api.get<ApiResponse<AmapClientConfig>>("/tools/amap/client-config"));
+}
+
+export async function buildAiMapWorkbench(payload: {
+  city?: string | null;
+  answer: string;
+  itinerary?: Array<{
+    day: number;
+    title: string;
+    items: Array<{ time?: string; title: string; detail: string }>;
+  }> | null;
+  structured_plan?: StructuredTravelPlan | null;
+  mode?: string;
+}): Promise<AiMapWorkbenchResult> {
+  return unwrapRaw(api.post<ApiResponse<AiMapWorkbenchResult>>("/tools/map/ai-workbench", payload, { timeout: 90000 }));
 }
 
 export async function crawlWeiboGuides(): Promise<Record<string, unknown>> {

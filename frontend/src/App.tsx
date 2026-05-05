@@ -37,6 +37,7 @@ import {
   fetchGuideImportRecords,
   fetchGuideImportTask,
   fetchGuideImportTasks,
+  fetchGuideRoutePreview,
   fetchGuideSources,
   fetchPlanVersions,
   fetchPreferenceProfile,
@@ -45,6 +46,7 @@ import {
   importGuideLink,
   loginUser,
   logoutUser,
+  queryRailway,
   registerUser,
   restoreAuthState,
   revokeAuthSession,
@@ -70,18 +72,21 @@ import type {
   GuideDetail,
   GuideLinkImportResult,
   GuideLinkPreviewResult,
+  GuideRoutePreviewResult,
   LocalUser,
   PlanVersion,
   PlanVersionCompare,
   PreferenceBehaviorEventPayload,
   PreferenceFeedbackPayload,
   PreferenceProfile,
+  RailwayQueryResult,
   RailwayTrain,
   StreamStage,
   ToolStatus,
   UserProfileUpdatePayload,
 } from "./lib/types";
 import { AddGuideModal } from "./components/AddGuideModal";
+import { AiMapWorkbench } from "./components/AiMapWorkbench";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { HistoryCenter } from "./components/HistoryCenter";
 import { InsightPanel } from "./components/InsightPanel";
@@ -102,13 +107,23 @@ import {
 type Message = { role: "user" | "assistant"; content: string };
 type SearchMode = "local_only" | "web_enhanced" | "auto";
 type GuestCarryoverDraft = Omit<GuestSessionImportPayload, "user_id">;
-type WorkspaceView = "overview" | "planning" | "railway" | "evidence" | "versions" | "memory";
+type WorkspaceView = "overview" | "planning" | "map" | "railway" | "evidence" | "versions" | "memory";
 type DecisionModuleState = "accepted" | "ignored";
 type RailwayWorkspaceDraft = {
   compare_trains: RailwayTrain[];
   candidate_trains: RailwayTrain[];
   generated_at: string;
   summary: string;
+};
+
+type GuideRailwayWorkspaceResult = {
+  guide: GuideDetail;
+  query: {
+    origin: string;
+    destination: string;
+    date: string;
+  };
+  result: RailwayQueryResult;
 };
 type GuideSelectionRequest = {
   guideId: number;
@@ -118,7 +133,7 @@ type GuideSelectionRequest = {
 
 const DEFAULT_READY_MESSAGE = "我已经准备好帮你把攻略、铁路、天气和地图放在一起做旅行判断。";
 
-const WORKSPACE_VIEWS: WorkspaceView[] = ["overview", "planning", "railway", "evidence", "versions", "memory"];
+const WORKSPACE_VIEWS: WorkspaceView[] = ["overview", "planning", "map", "railway", "evidence", "versions", "memory"];
 
 function isWorkspaceView(value: string | null): value is WorkspaceView {
   return Boolean(value && WORKSPACE_VIEWS.includes(value as WorkspaceView));
@@ -133,6 +148,7 @@ function resolveWorkspaceHeading(view: WorkspaceView) {
   const mapping: Record<WorkspaceView, string> = {
     overview: "旅行决策总览",
     planning: "可编辑规划工作台",
+    map: "AI 地图工作台",
     railway: "12306 铁路比选台",
     evidence: "来源与证据审计",
     versions: "版本对比与导出",
@@ -145,6 +161,7 @@ function resolveWorkspaceDescription(view: WorkspaceView, guestMode: boolean) {
   const mapping: Record<WorkspaceView, string> = {
     overview: "查看当前目的地、铁路、证据与版本概况。",
     planning: "对话、行程、铁路与偏好在同一工作流中连续协作。",
+    map: "把智能体输出中的景点、街区和车站解析到真实高德地图。",
     railway: "完整车次池、筛选比选与方案回写。",
     evidence: "攻略来源、联网结果与工具链路复核。",
     versions: "保留方案演进轨迹，支持回切、导出与分享。",
@@ -199,6 +216,7 @@ export default function App() {
   const [insightOpen, setInsightOpen] = useState(false);
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(getInitialWorkspaceView);
   const [railwayWorkspaceDraft, setRailwayWorkspaceDraft] = useState<RailwayWorkspaceDraft | null>(null);
+  const [guideRailwayResult, setGuideRailwayResult] = useState<GuideRailwayWorkspaceResult | null>(null);
   const [decisionModuleStates, setDecisionModuleStates] = useState<Record<string, DecisionModuleState>>({});
   const [referencedGuide, setReferencedGuide] = useState<GuideDetail | null>(null);
   const [guideSelectionRequest, setGuideSelectionRequest] = useState<GuideSelectionRequest | null>(null);
@@ -213,6 +231,10 @@ export default function App() {
   const guestCarryoverSummary = useMemo<GuestCarryoverSummary | null>(
     () => (guestCarryoverDraft ? buildGuestCarryoverSummary(guestCarryoverDraft) : null),
     [guestCarryoverDraft],
+  );
+  const railwayPageLatest = useMemo(
+    () => (guideRailwayResult ? buildGuideRailwayChatResponse(guideRailwayResult) : latest),
+    [guideRailwayResult, latest],
   );
 
   if (shareId) {
@@ -948,6 +970,26 @@ export default function App() {
     }).catch(() => undefined);
   }
 
+  async function handleBuildGuideRoutePreview(guide: GuideDetail): Promise<GuideRoutePreviewResult> {
+    return fetchGuideRoutePreview(guide.id);
+  }
+
+  async function handleQueryRailwayFromGuide(
+    guide: GuideDetail,
+    payload: { origin: string; destination: string; date: string },
+  ): Promise<RailwayQueryResult> {
+    const result = await queryRailway(payload);
+    setGuideRailwayResult({
+      guide,
+      query: payload,
+      result,
+    });
+    setRailwayWorkspaceDraft(null);
+    setModalOpen(false);
+    setWorkspaceView("railway");
+    return result;
+  }
+
   function registerPlanVersion(response: ChatResponse, context: Record<string, unknown>) {
     // 每次智能体产出都保留为一个版本，方便用户在“原始方案”和“二次优化方案”之间切换回看。
     const versionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1323,9 +1365,17 @@ export default function App() {
           </div>
         ) : null}
 
+        {workspaceView === "map" ? (
+          <AiMapWorkbench
+            latest={latest}
+            messages={messages}
+            onPrompt={(prompt) => void handlePrompt(prompt)}
+          />
+        ) : null}
+
         {workspaceView === "railway" ? (
           <RailwayDecisionPage
-            latest={latest}
+            latest={railwayPageLatest}
             onAdoptTrain={(prompt) => void handlePrompt(prompt)}
             onWorkspaceSync={handleRailwayWorkspaceSync}
             onSyncToPlanning={handleApplyRailwayWorkspaceDraft}
@@ -1352,6 +1402,8 @@ export default function App() {
             onGuideQuickAsk={handleGuideQuickAsk}
             activeReferencedGuide={referencedGuide}
             onOpenPlanningWorkspace={() => setWorkspaceView("planning")}
+            onOpenRailwayWorkspace={() => setWorkspaceView("railway")}
+            onQueryRailwayFromGuide={handleQueryRailwayFromGuide}
           />
         ) : null}
 
@@ -1453,6 +1505,8 @@ export default function App() {
         onUseImportedGuide={handleUseGuideInPlanning}
         onOptimizeImportedGuide={handleOptimizeImportedGuide}
         onSetPrimaryGuide={handleSetGuideAsPrimaryReference}
+        onBuildRoutePreview={handleBuildGuideRoutePreview}
+        onQueryRailwayFromGuide={handleQueryRailwayFromGuide}
       />
 
       <HistoryCenter
@@ -1553,6 +1607,7 @@ function ProductWorkspaceNav({
   const tabs: Array<{ id: WorkspaceView; label: string; icon: ReactNode; count?: number }> = [
     { id: "overview", label: "总览", icon: <Layers3 size={15} /> },
     { id: "planning", label: "规划", icon: <ListChecks size={15} />, count: latest?.itinerary?.length || 0 },
+    { id: "map", label: "地图", icon: <Route size={15} />, count: latest?.itinerary?.reduce((sum, day) => sum + day.items.length, 0) || 0 },
     { id: "railway", label: "铁路", icon: <TrainFront size={15} />, count: getRailwayTrains(latest).length },
     { id: "evidence", label: "证据", icon: <DatabaseZap size={15} />, count: latest?.sources.length || guideSources.length },
     { id: "versions", label: "版本", icon: <GitBranch size={15} />, count: planVersions.length },
@@ -1622,6 +1677,7 @@ function WorkspaceSidebarNav({
   const tabs: Array<{ id: WorkspaceView; label: string; icon: ReactNode; count?: number }> = [
     { id: "overview", label: "总览", icon: <Layers3 size={15} /> },
     { id: "planning", label: "规划", icon: <ListChecks size={15} />, count: latest?.itinerary?.length || 0 },
+    { id: "map", label: "地图", icon: <Route size={15} />, count: latest?.itinerary?.reduce((sum, day) => sum + day.items.length, 0) || 0 },
     { id: "railway", label: "铁路", icon: <TrainFront size={15} />, count: getRailwayTrains(latest).length },
     { id: "evidence", label: "证据", icon: <DatabaseZap size={15} />, count: latest?.sources.length || guideSources.length },
     { id: "versions", label: "版本", icon: <GitBranch size={15} />, count: planVersions.length },
@@ -2473,6 +2529,8 @@ function EvidenceWorkbench({
   onGuideQuickAsk,
   activeReferencedGuide,
   onOpenPlanningWorkspace,
+  onOpenRailwayWorkspace,
+  onQueryRailwayFromGuide,
 }: {
   latest: ChatResponse | null;
   guideSources: GuideSourceItem[];
@@ -2492,6 +2550,11 @@ function EvidenceWorkbench({
   onGuideQuickAsk: (guide: GuideDetail, prompt: string) => void;
   activeReferencedGuide: GuideDetail | null;
   onOpenPlanningWorkspace: () => void;
+  onOpenRailwayWorkspace: () => void;
+  onQueryRailwayFromGuide: (
+    guide: GuideDetail,
+    payload: { origin: string; destination: string; date: string },
+  ) => Promise<RailwayQueryResult>;
 }) {
   const modeLabel =
     searchMode === "auto" ? "自动检索" : searchMode === "local_only" ? "仅攻略库" : "联网增强";
@@ -2539,6 +2602,8 @@ function EvidenceWorkbench({
         onGuideQuickAsk={onGuideQuickAsk}
         activeReferencedGuide={activeReferencedGuide}
         onOpenPlanningWorkspace={onOpenPlanningWorkspace}
+        onOpenRailwayWorkspace={onOpenRailwayWorkspace}
+        onQueryRailwayFromGuide={onQueryRailwayFromGuide}
         preselectedGuideRequest={guideSelectionRequest}
       />
 
@@ -3077,6 +3142,48 @@ function getRailwayTrains(latest: ChatResponse | null): RailwayTrain[] {
   const value = latest?.cards.find((item) => item.type === "railway")?.meta?.trains;
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is RailwayTrain => typeof item === "object" && item !== null);
+}
+
+function buildGuideRailwayChatResponse(payload: GuideRailwayWorkspaceResult): ChatResponse {
+  const trainCount = payload.result.trains?.length || 0;
+  return {
+    conversation_id: `guide-railway-${payload.guide.id}`,
+    answer: `已从《${payload.guide.title}》带入铁路查询条件：${payload.query.origin} → ${payload.query.destination}，${payload.query.date}，返回 ${trainCount} 条车次候选。`,
+    intent: "railway_query",
+    cards: [
+      {
+        type: "railway",
+        title: `${payload.query.origin} → ${payload.query.destination}`,
+        summary: `攻略联动铁路查询返回 ${trainCount} 条候选车次。`,
+        meta: {
+          provider: payload.result.provider,
+          date: payload.result.date || payload.query.date,
+          trains: payload.result.trains || [],
+          fallback: payload.result.fallback || false,
+          notice: payload.result.notice || payload.result.reason,
+          source_guide_id: payload.guide.id,
+          source_guide_title: payload.guide.title,
+        },
+      },
+    ],
+    itinerary: null,
+    tool_calls: [
+      {
+        tool_name: "12306_mcp_guide_link",
+        status: payload.result.fallback ? "fallback" : "success",
+        output_summary: `${payload.query.origin} 到 ${payload.query.destination}，${trainCount} 条候选`,
+      },
+    ],
+    sources: [
+      {
+        title: payload.guide.title,
+        url: payload.guide.source_url,
+        source_type: payload.guide.source_type || "guide",
+      },
+    ],
+    warnings: payload.result.fallback ? [payload.result.notice || payload.result.reason || "铁路查询使用兜底数据，请以 12306 官方为准。"] : [],
+    decision_modules: [],
+  };
 }
 
 function appSeatSummary(train: RailwayTrain) {

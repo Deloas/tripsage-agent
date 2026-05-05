@@ -2,10 +2,18 @@ import re
 import time
 
 from langgraph.graph import END, StateGraph
+from pydantic import ValidationError
 
-from app.agents.prompts import INTENT_AND_SLOT_PROMPT, PLANNER_PROMPT
+from app.agents.prompts import INTENT_AND_SLOT_PROMPT, PLANNER_PROMPT, PLANNER_TEXT_PROMPT
 from app.agents.state import TripAgentState
-from app.schemas.chat import DecisionModule, ItineraryBlock
+from app.schemas.chat import (
+    DecisionModule,
+    ItineraryBlock,
+    StructuredAgendaItem,
+    StructuredPlaceBrief,
+    StructuredPlanDay,
+    StructuredTravelPlan,
+)
 from app.schemas.common import ResultCard, SourceRef, ToolCallView
 from app.services.amap_service import AmapService
 from app.services.llm_service import LlmService
@@ -16,6 +24,30 @@ from app.services.web_search_service import WebSearchService
 
 
 CITY_WORDS = ["北京", "上海", "南京", "苏州", "杭州", "成都", "重庆", "广州", "深圳", "厦门", "青岛", "长沙", "武汉", "西安"]
+PLACE_SUFFIX_PATTERN = re.compile(
+    r"[A-Za-z0-9·（）()一-龥]{2,28}(?:公园|博物馆|美术馆|古城|古镇|老街|步行街|创意园|文化园|书城|书店|商圈|商业区|广场|天地|世界之窗|欢乐海岸|海上世界|海岸城|车站|高铁站|机场|码头|沙滩|湿地公园|森林公园)"
+)
+PLACE_EN_PATTERN = re.compile(r"\b(?:OCT-LOFT|COCO\s*Park|K11|SKY\s*Walk|CityWalk)\b", re.IGNORECASE)
+GENERIC_PLACE_WORDS = {
+    "抵达与放行李",
+    "核心景点慢游",
+    "本地美食",
+    "代表性景点",
+    "街区漫游",
+    "返程或夜游",
+    "城市初识",
+    "深度体验",
+    "夜景",
+    "美食",
+    "古城漫游",
+}
+SEED_KEYWORDS_BY_STYLE = {
+    "夜景": ["夜景", "海上世界", "公园"],
+    "美食": ["美食街", "步行街", "商圈"],
+    "历史": ["博物馆", "古城", "古镇"],
+    "文艺": ["创意园", "书店", "美术馆"],
+    "亲子": ["主题乐园", "公园", "海洋馆"],
+}
 
 
 def build_logger(state: TripAgentState) -> ToolLogger:
@@ -101,6 +133,629 @@ def build_itinerary(destination: str | None, guides: list[dict], selected_guides
     ]
 
 
+def _normalize_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_compact(value: object) -> str:
+    return re.sub(r"\s+|[\"'·\-（）()]", "", _normalize_text(value).lower())
+
+
+def _coerce_days_count(value: object, default: int = 2) -> int:
+    mapping = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5}
+    text = _normalize_text(value)
+    if text.isdigit():
+        return max(1, min(int(text), 5))
+    for key, number in mapping.items():
+        if key in text:
+            return number
+    return default
+
+
+def _extract_style_keywords(state: TripAgentState) -> list[str]:
+    slots = state.get("slots") or {}
+    style_values = [str(item) for item in (slots.get("style") or []) if str(item).strip()]
+    message = state.get("user_message", "")
+    keywords: list[str] = []
+    for style, seed_keywords in SEED_KEYWORDS_BY_STYLE.items():
+        if style in message or any(style in value for value in style_values):
+            keywords.extend(seed_keywords)
+    if "不想太赶" in message or "轻松" in message:
+        keywords.append("公园")
+    if "不爬山" in message or "别安排太多爬山" in message:
+        keywords.extend(["海滨", "步行街"])
+    if not keywords:
+        keywords.extend(["公园", "博物馆", "步行街"])
+    unique: list[str] = []
+    for keyword in keywords:
+        if keyword not in unique:
+            unique.append(keyword)
+    return unique[:5]
+
+
+def _looks_generic_place(value: str) -> bool:
+    text = _normalize_text(value)
+    if not text:
+        return True
+    if text in GENERIC_PLACE_WORDS:
+        return True
+    if len(text) <= 1:
+        return True
+    return any(word in text for word in ["预算", "建议", "分钟", "打车", "地铁", "高铁", "车次", "返程", "抵达"])
+
+
+def _extract_place_names(text: str) -> list[str]:
+    if not text:
+        return []
+    names: list[str] = []
+    for pattern in (PLACE_SUFFIX_PATTERN, PLACE_EN_PATTERN):
+        for match in pattern.findall(text):
+            name = _normalize_text(match)
+            if name and not _looks_generic_place(name) and name not in names:
+                names.append(name[:40])
+    return names[:12]
+
+
+def _normalize_seed_place_name(name: str, keyword: str) -> str:
+    text = _normalize_text(name)
+    if not text:
+        return ""
+    if len(keyword) >= 3 and keyword in text and keyword not in {"公园", "夜景", "步行街", "商圈", "美食街", "博物馆"}:
+        return keyword
+    text = re.sub(r"[-－].*$", "", text).strip()
+    text = re.sub(r"(广场[ABCD]?[区座馆]?|风筝广场|雕像|游客中心|船头广场|广场A区|广场B区)$", "", text).strip()
+    return text[:40]
+
+
+def _reject_seed_place_name(name: str) -> bool:
+    text = _normalize_text(name)
+    return any(word in text for word in ["大厦", "商务", "写字楼", "公寓", "停车场", "出入口", "售票处"])
+
+
+def _guide_destination_focus_score(item: dict, destination: str | None) -> float:
+    if not destination:
+        return 0.6
+    title = _normalize_text(item.get("title"))
+    guide_city = _normalize_text(item.get("city"))
+    content = _normalize_text(item.get("content"))[:1200]
+    merged = "\n".join([title, guide_city, content])
+    destination_hits = merged.count(destination)
+    other_cities = [city for city in CITY_WORDS if city != destination and city in merged]
+
+    score = 0.0
+    if destination in guide_city:
+        score += 0.62
+    if destination in title:
+        score += 0.26
+    if destination_hits >= 3:
+        score += 0.24
+    elif destination_hits == 2:
+        score += 0.16
+    elif destination_hits == 1:
+        score += 0.08
+    if destination not in guide_city and destination not in title and destination_hits <= 1 and len(other_cities) >= 2:
+        score -= 0.32
+    if any(word in title + content for word in ["中转", "出发", "卧铺", "直飞", "港澳", "合集"]) and destination not in title:
+        score -= 0.16
+    if destination and any(phrase in title + content for phrase in [f"从{destination}出发", f"坐标{destination}", f"{destination}去", f"{destination}/"]):
+        score -= 0.22
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+def _rerank_guides_for_destination(items: list, destination: str | None) -> list:
+    if not destination:
+        return items
+    rescored: list = []
+    for item in items:
+        payload = item.model_dump() if hasattr(item, "model_dump") else dict(item)
+        base_score = float(payload.get("score", 0.0) or 0.0)
+        focus_score = _guide_destination_focus_score(payload, destination)
+        payload["destination_focus_score"] = focus_score
+        combined_score = round(min(1.2, base_score * 0.62 + focus_score * 0.68), 4)
+        if hasattr(item, "score"):
+            item.score = combined_score
+        payload["score"] = combined_score
+        payload["focus_gate_passed"] = focus_score >= 0.28 or destination in _normalize_text(payload.get("title"))
+        rescored.append((item, payload))
+
+    filtered = [item for item, payload in rescored if payload["focus_gate_passed"]]
+    if not filtered:
+        filtered = [item for item, _payload in rescored[:2]]
+    filtered.sort(key=lambda guide: getattr(guide, "score", 0.0), reverse=True)
+    return filtered[:5]
+
+
+def _extract_places_from_guides(guides: list[dict], destination: str | None) -> list[dict]:
+    pool: list[dict] = []
+    seen: set[str] = set()
+    for guide in guides[:4]:
+        if destination and _guide_destination_focus_score(guide, destination) < 0.72:
+            continue
+        merged = "\n".join(
+            [
+                _normalize_text(guide.get("title")),
+                _normalize_text(guide.get("content"))[:1600],
+            ]
+        )
+        for name in _extract_place_names(merged):
+            key = _normalize_compact(name)
+            if key in seen:
+                continue
+            seen.add(key)
+            pool.append(
+                {
+                    "name": name,
+                    "source": "guide",
+                    "reason": f"来自本地攻略《{_normalize_text(guide.get('title'))[:32]}》",
+                    "city": destination,
+                }
+            )
+    return pool
+
+
+def _extract_places_from_web_items(items: list) -> list[dict]:
+    pool: list[dict] = []
+    seen: set[str] = set()
+    for item in items[:5]:
+        title = getattr(item, "title", "") if hasattr(item, "title") else _normalize_text(item.get("title"))
+        snippet = getattr(item, "snippet", "") if hasattr(item, "snippet") else _normalize_text(item.get("snippet"))
+        merged = f"{title}\n{snippet}"
+        for name in _extract_place_names(merged):
+            key = _normalize_compact(name)
+            if key in seen:
+                continue
+            seen.add(key)
+            pool.append(
+                {
+                    "name": name,
+                    "source": "web_search",
+                    "reason": f"来自联网结果《{_normalize_text(title)[:32]}》",
+                }
+            )
+    return pool
+
+
+async def _build_amap_seed_places(state: TripAgentState) -> list[dict]:
+    destination = _normalize_text((state.get("slots") or {}).get("destination"))
+    if not destination:
+        return []
+    service = AmapService()
+    if not service.configured():
+        return []
+
+    pool: list[dict] = []
+    seen: set[str] = set()
+    for keyword in _extract_style_keywords(state):
+        result = await service.search_poi(keyword, destination)
+        added_for_keyword = 0
+        for poi in result.get("pois") or []:
+            name = _normalize_seed_place_name(_normalize_text(poi.get("name")), keyword)
+            key = _normalize_compact(name)
+            if not name or key in seen or _looks_generic_place(name) or _reject_seed_place_name(name):
+                continue
+            seen.add(key)
+            pool.append(
+                {
+                    "name": name,
+                    "source": "amap_seed",
+                    "reason": f"高德城市候选：{keyword}",
+                    "city": poi.get("city") or destination,
+                    "district": poi.get("district"),
+                    "address": poi.get("address"),
+                }
+            )
+            added_for_keyword += 1
+            if added_for_keyword >= 2:
+                break
+            if len(pool) >= 10:
+                return pool
+    return pool
+
+
+def _dedupe_place_pool(pool: list[dict]) -> list[dict]:
+    unique: list[dict] = []
+    seen: set[str] = set()
+    for item in pool:
+        name = _normalize_text(item.get("name"))
+        key = _normalize_compact(name)
+        if not name or key in seen or _looks_generic_place(name):
+            continue
+        seen.add(key)
+        unique.append({**item, "name": name})
+    return unique[:12]
+
+
+async def _build_planning_place_pool(state: TripAgentState) -> list[dict]:
+    destination = _normalize_text((state.get("slots") or {}).get("destination"))
+    guide_pool = _extract_places_from_guides(state.get("retrieved_guides", []), destination or None)
+    web_pool = _extract_places_from_web_items(state.get("web_items", []))
+    coverage = state.get("guide_coverage") or {}
+    need_amap_seed = not guide_pool or float(coverage.get("destination_focus_score", 0.0) or 0.0) < 0.72
+    amap_pool = await _build_amap_seed_places(state) if need_amap_seed else []
+    return _dedupe_place_pool([*amap_pool, *web_pool, *guide_pool])
+
+
+def _build_planner_prompt(state: TripAgentState) -> str:
+    """中文注释：把多源上下文压缩后喂给大模型，减少无关噪声对结构化输出的污染。"""
+    context = state.get("context", {})
+    return PLANNER_PROMPT.format(
+        message=state["user_message"],
+        intent=state.get("intent"),
+        slots=state.get("slots"),
+        guides=state.get("retrieved_guides", [])[:4],
+        selected_guides=(context.get("selected_guides") or [])[:2],
+        web_items=[item.__dict__ for item in state.get("web_items", [])[:4]],
+        weather=state.get("weather_result"),
+        railway=state.get("railway_result"),
+        route=state.get("route_result"),
+        edited_plan=context.get("edited_plan"),
+        preference_profile=context.get("preference_profile"),
+        planning_place_pool=state.get("planning_place_pool") or [],
+    )
+
+
+def _build_planner_text_prompt(state: TripAgentState) -> str:
+    """中文注释：当直接出 JSON 不稳定时，先让模型输出一版完整文案，再做结构抽取。"""
+    context = state.get("context", {})
+    return PLANNER_TEXT_PROMPT.format(
+        message=state["user_message"],
+        intent=state.get("intent"),
+        slots=state.get("slots"),
+        guides=state.get("retrieved_guides", [])[:4],
+        selected_guides=(context.get("selected_guides") or [])[:2],
+        web_items=[item.__dict__ for item in state.get("web_items", [])[:4]],
+        weather=state.get("weather_result"),
+        railway=state.get("railway_result"),
+        route=state.get("route_result"),
+        edited_plan=context.get("edited_plan"),
+        preference_profile=context.get("preference_profile"),
+        planning_place_pool=state.get("planning_place_pool") or [],
+    )
+
+
+def _normalize_structured_plan(payload: dict, state: TripAgentState) -> StructuredTravelPlan | None:
+    """中文注释：对模型输出做一次严格归一化，确保后续地图和前端都能稳定消费。"""
+    if not isinstance(payload, dict):
+        return None
+
+    normalized_days: list[dict] = []
+    for index, raw_day in enumerate(payload.get("days") or [], start=1):
+        if not isinstance(raw_day, dict):
+            continue
+        places = []
+        for place_index, raw_place in enumerate(raw_day.get("places") or [], start=1):
+            if not isinstance(raw_place, dict):
+                continue
+            name = str(raw_place.get("name") or "").strip()
+            if not name or _looks_generic_place(name):
+                continue
+            aliases = [
+                str(item).strip()
+                for item in (raw_place.get("aliases") or [])
+                if str(item).strip() and str(item).strip() != name and not _looks_generic_place(str(item).strip())
+            ]
+            places.append(
+                {
+                    "name": name[:80],
+                    "aliases": aliases[:4],
+                    "intro": str(raw_place.get("intro") or "").strip()[:240],
+                    "category": str(raw_place.get("category") or "").strip()[:40] or None,
+                    "stay_minutes": _coerce_int(raw_place.get("stay_minutes")),
+                    "transport_hint": str(raw_place.get("transport_hint") or "").strip()[:120] or None,
+                    "order": _coerce_int(raw_place.get("order")) or place_index,
+                }
+            )
+
+        agenda = []
+        for raw_item in raw_day.get("agenda") or []:
+            if not isinstance(raw_item, dict):
+                continue
+            title = str(raw_item.get("title") or "").strip()
+            detail = str(raw_item.get("detail") or "").strip()
+            if not title and not detail:
+                continue
+            agenda.append(
+                {
+                    "time": str(raw_item.get("time") or "").strip()[:40],
+                    "title": title[:120],
+                    "detail": detail[:600],
+                    "place_name": str(raw_item.get("place_name") or "").strip()[:80] or None,
+                    "transport_hint": str(raw_item.get("transport_hint") or "").strip()[:120] or None,
+                }
+            )
+
+        if not places and agenda:
+            places = _derive_places_from_agenda(agenda)
+
+        normalized_days.append(
+            {
+                "day": _coerce_int(raw_day.get("day")) or index,
+                "title": str(raw_day.get("title") or f"Day {index} 行程").strip()[:120],
+                "summary": str(raw_day.get("summary") or "").strip()[:240],
+                "route_digest": str(raw_day.get("route_digest") or "").strip()[:240],
+                "agenda": agenda[:10],
+                "places": places[:10],
+            }
+        )
+
+    destination = (
+        str(payload.get("city") or "").strip()
+        or str((state.get("slots") or {}).get("destination") or "").strip()
+        or None
+    )
+    if normalized_days and not any(day.get("places") for day in normalized_days):
+        fallback_plan = _build_structured_plan_fallback(state)
+        return fallback_plan
+    if not normalized_days and destination:
+        fallback_plan = _build_structured_plan_fallback(state)
+        return fallback_plan
+
+    try:
+        return StructuredTravelPlan.model_validate(
+            {
+                "city": destination,
+                "trip_summary": str(payload.get("trip_summary") or "").strip()[:400],
+                "planning_style": str(payload.get("planning_style") or "").strip()[:120],
+                "budget_hint": str(payload.get("budget_hint") or "").strip()[:200],
+                "transport_hint": str(payload.get("transport_hint") or "").strip()[:200],
+                "rainy_day_hint": str(payload.get("rainy_day_hint") or "").strip()[:200],
+                "risk_hint": str(payload.get("risk_hint") or "").strip()[:200],
+                "days": normalized_days[:5],
+            }
+        )
+    except ValidationError:
+        return None
+
+
+def _derive_places_from_agenda(agenda: list[dict]) -> list[dict]:
+    """中文注释：当模型没单独给地点清单时，从详细 agenda 里补出一份精简地点表。"""
+    seen: set[str] = set()
+    places: list[dict] = []
+    for index, item in enumerate(agenda, start=1):
+        name = str(item.get("place_name") or item.get("title") or "").strip()
+        if not name or name in seen or _looks_generic_place(name):
+            continue
+        seen.add(name)
+        places.append(
+            {
+                "name": name[:80],
+                "aliases": [],
+                "intro": str(item.get("detail") or "").strip()[:180],
+                "category": None,
+                "stay_minutes": None,
+                "transport_hint": str(item.get("transport_hint") or "").strip()[:120] or None,
+                "order": index,
+            }
+        )
+    return places
+
+
+def _coerce_int(value: object) -> int | None:
+    try:
+        parsed = int(str(value).strip())
+        return parsed if parsed >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_structured_plan_fallback(state: TripAgentState) -> StructuredTravelPlan | None:
+    """中文注释：模型 JSON 失败时，用规则行程兜底出一份最小可用结构，避免地图断链。"""
+    destination = _normalize_text((state.get("slots") or {}).get("destination"))
+    days_count = _coerce_days_count((state.get("slots") or {}).get("days"), default=2)
+    place_pool = state.get("planning_place_pool") or []
+    unique_places = [_normalize_text(item.get("name")) for item in place_pool if _normalize_text(item.get("name"))]
+
+    if unique_places:
+        per_day = max(2, (len(unique_places) + days_count - 1) // days_count)
+        days: list[StructuredPlanDay] = []
+        time_slots = ["上午", "下午", "晚上"]
+        for day_index in range(days_count):
+            start = day_index * per_day
+            end = start + per_day
+            day_places = unique_places[start:end]
+            if not day_places:
+                continue
+            agenda_items: list[StructuredAgendaItem] = []
+            places: list[StructuredPlaceBrief] = []
+            for place_index, name in enumerate(day_places[:4], start=1):
+                source_item = next((item for item in place_pool if _normalize_text(item.get("name")) == name), {})
+                detail = _normalize_text(source_item.get("reason")) or "适合作为这一天的主线地点。"
+                agenda_items.append(
+                    StructuredAgendaItem(
+                        time=time_slots[min(place_index - 1, len(time_slots) - 1)],
+                        title=name,
+                        detail=detail,
+                        place_name=name,
+                        transport_hint=_normalize_text(source_item.get("district")) or None,
+                    )
+                )
+                places.append(
+                    StructuredPlaceBrief(
+                        name=name,
+                        intro=detail[:180],
+                        order=place_index,
+                    )
+                )
+            days.append(
+                StructuredPlanDay(
+                    day=day_index + 1,
+                    title=f"{destination or '目的地'}第 {day_index + 1} 天",
+                    summary="根据本地攻略、联网摘要与高德候选点自动拼装的稳定行程草案。",
+                    route_digest=" -> ".join(day_places[:5]),
+                    agenda=agenda_items,
+                    places=places,
+                )
+            )
+        if days:
+            return StructuredTravelPlan(
+                city=destination or None,
+                trip_summary=f"先为你生成一版更贴近真实地点的 {destination or '目的地'} 可执行方案。",
+                planning_style="结构化兜底方案",
+                budget_hint="如需更准确预算，可继续补充住宿标准和人均期望。",
+                transport_hint="优先结合实时铁路和地图结果继续细化。",
+                rainy_day_hint="若天气有雨，优先把室内点位前置。",
+                risk_hint="当前为兜底结构，请结合实时结果二次确认。",
+                days=days,
+            )
+
+    itinerary = build_itinerary(
+        destination or None,
+        state.get("retrieved_guides", []),
+        state.get("context", {}).get("selected_guides") or [],
+    )
+    if not itinerary:
+        return None
+
+    days: list[StructuredPlanDay] = []
+    for day in itinerary:
+        agenda_items = [
+            StructuredAgendaItem(
+                time=str(item.get("time") or ""),
+                title=str(item.get("title") or ""),
+                detail=str(item.get("detail") or ""),
+                place_name=str(item.get("title") or ""),
+            )
+            for item in day.items
+        ]
+        places = [
+            StructuredPlaceBrief(
+                name=item.title,
+                intro=item.detail[:180],
+                order=index + 1,
+            )
+            for index, item in enumerate(agenda_items)
+            if item.title
+        ]
+        days.append(
+            StructuredPlanDay(
+                day=day.day,
+                title=day.title,
+                summary="根据当前攻略命中和工具结果生成的兜底方案。",
+                route_digest=" -> ".join(place.name for place in places[:5]),
+                agenda=agenda_items,
+                places=places[:6],
+            )
+        )
+
+    return StructuredTravelPlan(
+        city=destination or None,
+        trip_summary=f"先为你生成一版 {destination or '目的地'} 的基础可执行方案。",
+        planning_style="基础兜底方案",
+        budget_hint="如需更准确预算，可继续补充住宿标准和人均期望。",
+        transport_hint="优先结合实时铁路和地图结果继续细化。",
+        rainy_day_hint="若天气有雨，优先把室内点位前置。",
+        risk_hint="当前为兜底结构，请结合实时结果二次确认。",
+        days=days,
+    )
+
+
+def _build_itinerary_from_structured_plan(plan: StructuredTravelPlan | None) -> list[ItineraryBlock] | None:
+    """中文注释：把结构化方案同步成前端现有的可编辑 itinerary 视图。"""
+    if not plan or not plan.days:
+        return None
+    result: list[ItineraryBlock] = []
+    for day in plan.days:
+        agenda = day.agenda or []
+        if not agenda and day.places:
+            agenda = [
+                StructuredAgendaItem(
+                    time="弹性",
+                    title=place.name,
+                    detail=place.intro or "可继续补充该地点的停留安排。",
+                    place_name=place.name,
+                    transport_hint=place.transport_hint,
+                )
+                for place in day.places
+            ]
+        items = [
+            {
+                "time": item.time or "弹性",
+                "title": item.title or item.place_name or "待补充安排",
+                "detail": item.detail or item.transport_hint or "可继续补充该时段安排。",
+            }
+            for item in agenda
+        ]
+        result.append(ItineraryBlock(day=day.day, title=day.title, items=items[:10]))
+    return result
+
+
+def _render_structured_answer(plan: StructuredTravelPlan, state: TripAgentState) -> str:
+    """中文注释：统一把结构化行程渲染成稳定的人类可读回复，避免模型文案漂移影响前端和地图。"""
+    lines: list[str] = []
+    city = plan.city or str((state.get("slots") or {}).get("destination") or "目的地")
+    lines.append(f"## {city}旅行方案")
+    if plan.trip_summary:
+        lines.append(plan.trip_summary)
+    overview_bits = [bit for bit in [plan.planning_style, plan.budget_hint, plan.transport_hint] if bit]
+    if overview_bits:
+        lines.append("")
+        lines.append("### 规划概览")
+        lines.extend([f"- {bit}" for bit in overview_bits])
+
+    for day in plan.days:
+        lines.append("")
+        lines.append(f"### Day {day.day} | {day.title}")
+        if day.summary:
+            lines.append(day.summary)
+        for item in day.agenda[:10]:
+            title = item.title or item.place_name or "待补充安排"
+            detail = item.detail or item.transport_hint or "可继续补充该时段安排。"
+            prefix = f"{item.time} | " if item.time else ""
+            lines.append(f"- **{prefix}{title}**：{detail}")
+        if day.places:
+            lines.append("")
+            lines.append(f"**Day {day.day} 地点清单**")
+            lines.append(" -> ".join(place.name for place in day.places[:8]))
+            lines.append("")
+            lines.append(f"**Day {day.day} 地点简介**")
+            for index, place in enumerate(day.places[:8], start=1):
+                suffix = f"；{place.transport_hint}" if place.transport_hint else ""
+                intro = place.intro or "适合纳入这一天的主线安排。"
+                lines.append(f"{index}. {place.name}：{intro}{suffix}")
+
+    extra_hints = [
+        ("预算提示", plan.budget_hint),
+        ("交通建议", plan.transport_hint),
+        ("雨天备选", plan.rainy_day_hint),
+        ("风险提醒", plan.risk_hint),
+    ]
+    available_hints = [(title, content) for title, content in extra_hints if content]
+    if available_hints:
+        lines.append("")
+        lines.append("### 出行提醒")
+        for title, content in available_hints:
+            lines.append(f"- **{title}**：{content}")
+
+    return "\n".join(lines).strip()
+
+
+async def _extract_structured_plan_from_answer(answer: str, state: TripAgentState) -> StructuredTravelPlan | None:
+    """中文注释：把模型生成的自然语言攻略二次压成结构，让地图链路永远优先吃结构化结果。"""
+    if not answer.strip():
+        return None
+    llm = LlmService()
+    if not llm.configured():
+        return None
+
+    prompt = "\n".join(
+        [
+            "请把下面这份中国旅行攻略转换为严格 JSON。",
+            "只输出 JSON，不要解释，不要 Markdown。",
+            "必须输出字段：city、trip_summary、planning_style、budget_hint、transport_hint、rainy_day_hint、risk_hint、days。",
+            "days 中每一天必须包含：day、title、summary、route_digest、agenda、places。",
+            "agenda 每项字段：time、title、detail、place_name、transport_hint。",
+            "places 每项字段：name、aliases、intro、category、stay_minutes、transport_hint、order。",
+            "如果当天存在多个真实地点，必须拆开写进 places。",
+            "如果地点名是别称或英文缩写，name 用正式中文名，别名放 aliases。",
+            f"目标城市提示：{str((state.get('slots') or {}).get('destination') or '').strip() or '未知'}",
+            f"候选地点池提示：{state.get('planning_place_pool') or []}",
+            "",
+            answer[:5000],
+        ]
+    )
+    payload = await llm.json_chat(prompt)
+    return _normalize_structured_plan(payload or {}, state)
+
 def _normalize_city_value(value: object) -> str | None:
     if value is None:
         return None
@@ -128,6 +783,7 @@ def evaluate_local_guide_coverage(state: TripAgentState) -> dict:
     destination_match_count = 0
     long_chunk_count = 0
     token_coverages: list[float] = []
+    destination_focus_scores: list[float] = []
     for item in guides[:3]:
         merged_text = "\n".join(
             [
@@ -136,7 +792,9 @@ def evaluate_local_guide_coverage(state: TripAgentState) -> dict:
                 str(item.get("content", "")),
             ]
         )
-        if destination and destination in merged_text:
+        focus_score = _guide_destination_focus_score(item, destination)
+        destination_focus_scores.append(focus_score)
+        if focus_score >= 0.55:
             destination_match_count += 1
         if len(str(item.get("content", ""))) >= 90:
             long_chunk_count += 1
@@ -146,7 +804,10 @@ def evaluate_local_guide_coverage(state: TripAgentState) -> dict:
 
     unique_guide_score = min(1.0, len(unique_guide_ids) / 3)
     relevance_score = max(top_score, avg_top_score)
-    destination_score = 1.0 if not destination else min(1.0, destination_match_count / 2)
+    destination_focus_score = (
+        round(sum(destination_focus_scores) / len(destination_focus_scores), 4) if destination_focus_scores else 0.0
+    )
+    destination_score = 1.0 if not destination else destination_focus_score
     token_score = round(sum(token_coverages) / len(token_coverages), 4) if token_coverages else 0.0
     source_score = min(1.0, len(unique_sources) / 2)
     chunk_quality_score = min(1.0, long_chunk_count / 2)
@@ -166,8 +827,8 @@ def evaluate_local_guide_coverage(state: TripAgentState) -> dict:
         reasons.append("本地攻略命中数量偏少")
     if top_score < 0.35:
         reasons.append("头部攻略相关性偏弱")
-    if destination and destination_match_count == 0:
-        reasons.append("本地攻略没有明确覆盖目标城市")
+    if destination and destination_focus_score < 0.6:
+        reasons.append("本地攻略对目标城市的聚焦度不足")
     if len(unique_sources) < 2:
         reasons.append("来源多样性不足")
     if token_score < 0.3:
@@ -177,7 +838,7 @@ def evaluate_local_guide_coverage(state: TripAgentState) -> dict:
         not guides
         or coverage_score < 0.58
         or top_score < 0.32
-        or (destination and destination_match_count == 0)
+        or (destination and destination_focus_score < 0.6)
     )
     if not reasons and not needs_web_search:
         reasons.append("本地攻略覆盖度充足")
@@ -190,6 +851,7 @@ def evaluate_local_guide_coverage(state: TripAgentState) -> dict:
         "avg_top_score": avg_top_score,
         "destination": destination,
         "destination_match_count": destination_match_count,
+        "destination_focus_score": destination_focus_score,
         "token_score": token_score,
         "chunk_quality_score": chunk_quality_score,
         "needs_web_search": needs_web_search,
@@ -203,16 +865,34 @@ async def intent_slot_node(state: TripAgentState) -> TripAgentState:
     context = state.get("context", {})
     llm = LlmService()
     parsed = await llm.json_chat(INTENT_AND_SLOT_PROMPT.replace("{message}", message))
+    rule_intent = infer_intent_by_rules(message)
+    rule_slots = extract_slots_by_rules(message, context)
 
     if parsed and parsed.get("intent"):
-        state["intent"] = parsed.get("intent", "general_qa")
-        state["slots"] = {**extract_slots_by_rules(message, context), **(parsed.get("slots") or {})}
+        parsed_slots = parsed.get("slots") or {}
+        merged_slots = {**rule_slots, **parsed_slots}
+        parsed_intent = parsed.get("intent", "general_qa")
+
+        # 中文注释：当规则已经明显识别出“已有目的地要做行程规划”时，优先守住这个判断，避免模型轻微跑偏。
+        if rule_intent == "itinerary_planning" and parsed_intent in {"destination_recommendation", "general_qa"}:
+            parsed_intent = rule_intent
+        if rule_slots.get("destination") and not merged_slots.get("destination"):
+            merged_slots["destination"] = rule_slots.get("destination")
+        if rule_slots.get("origin") and not merged_slots.get("origin"):
+            merged_slots["origin"] = rule_slots.get("origin")
+        if rule_slots.get("days") and not merged_slots.get("days"):
+            merged_slots["days"] = rule_slots.get("days")
+        if rule_slots.get("budget") and not merged_slots.get("budget"):
+            merged_slots["budget"] = rule_slots.get("budget")
+
+        state["intent"] = parsed_intent
+        state["slots"] = merged_slots
         state["missing_slots"] = parsed.get("missing_slots") or []
         state["confidence"] = parsed.get("confidence", 0.8)
         return state
 
-    state["intent"] = infer_intent_by_rules(message)
-    state["slots"] = extract_slots_by_rules(message, context)
+    state["intent"] = rule_intent
+    state["slots"] = rule_slots
     state["missing_slots"] = []
     state["confidence"] = 0.62
     return state
@@ -224,11 +904,13 @@ async def retrieval_node(state: TripAgentState) -> TripAgentState:
     logger = build_logger(state)
     slots = state.get("slots", {})
     start = time.perf_counter()
-    items = rag.search(state["user_message"], city=slots.get("destination"), top_k=5)
+    raw_items = rag.search(state["user_message"], city=slots.get("destination"), top_k=8)
+    items = _rerank_guides_for_destination(raw_items, slots.get("destination"))
     latency = int((time.perf_counter() - start) * 1000)
     state["retrieved_guides"] = [item.model_dump() for item in items]
     state["guide_items"] = items
     state["guide_coverage"] = evaluate_local_guide_coverage(state)
+    state["planning_place_pool"] = []
     logger.record(
         "guide_search",
         {"query": state["user_message"], "city": slots.get("destination")},
@@ -332,22 +1014,30 @@ async def route_node(state: TripAgentState) -> TripAgentState:
 async def planner_node(state: TripAgentState) -> TripAgentState:
     """规划生成节点。"""
     llm = LlmService()
-    context = state.get("context", {})
-    prompt = PLANNER_PROMPT.format(
-        message=state["user_message"],
-        intent=state.get("intent"),
-        slots=state.get("slots"),
-        guides=state.get("retrieved_guides", []),
-        selected_guides=context.get("selected_guides") or [],
-        web_items=[item.__dict__ for item in state.get("web_items", [])],
-        weather=state.get("weather_result"),
-        railway=state.get("railway_result"),
-        route=state.get("route_result"),
-        edited_plan=context.get("edited_plan"),
-        preference_profile=context.get("preference_profile"),
-    )
-    answer = await llm.plain_chat(prompt)
-    state["final_answer"] = answer or compose_fallback_answer(state)
+    state["planning_place_pool"] = await _build_planning_place_pool(state)
+    prompt = _build_planner_prompt(state)
+    planner_payload = await llm.json_chat(prompt)
+    structured_plan = _normalize_structured_plan(planner_payload or {}, state)
+
+    if structured_plan:
+        state["structured_plan"] = structured_plan.model_dump()
+        state["itinerary"] = _build_itinerary_from_structured_plan(structured_plan)
+        state["final_answer"] = _render_structured_answer(structured_plan, state)
+        return state
+
+    rich_answer = await llm.plain_chat(_build_planner_text_prompt(state))
+    if rich_answer:
+        extracted_plan = await _extract_structured_plan_from_answer(rich_answer, state)
+        if extracted_plan:
+            state["structured_plan"] = extracted_plan.model_dump()
+            state["itinerary"] = _build_itinerary_from_structured_plan(extracted_plan)
+            state["final_answer"] = _render_structured_answer(extracted_plan, state)
+            return state
+
+    fallback_plan = _build_structured_plan_fallback(state)
+    state["structured_plan"] = fallback_plan.model_dump() if fallback_plan else None
+    state["itinerary"] = _build_itinerary_from_structured_plan(fallback_plan)
+    state["final_answer"] = _render_structured_answer(fallback_plan, state) if fallback_plan else (rich_answer or compose_fallback_answer(state))
     return state
 
 
@@ -359,7 +1049,8 @@ async def response_node(state: TripAgentState) -> TripAgentState:
     guides = state.get("retrieved_guides", [])
     selected_guides = state.get("context", {}).get("selected_guides") or []
 
-    state["itinerary"] = build_itinerary(destination, guides, selected_guides)
+    if not state.get("itinerary"):
+        state["itinerary"] = build_itinerary(destination, guides, selected_guides)
     state["cards"] = build_cards(destination, weather, railway)
     state["sources"] = build_sources(state.get("guide_items", []), state.get("web_items", []))
     state["warnings"] = build_warnings(weather, railway)

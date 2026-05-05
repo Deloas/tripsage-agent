@@ -26,6 +26,13 @@ Thumbs.db
 data/chroma/
 data/tripsage.db
 logs/*.log
+logs/guide_ocr_cache/
+logs/weibo_ocr_cache/
+logs/*.png
+logs/*.jpg
+logs/weibo_mobile_fetch_test.json
+backend/*.log
+frontend/*.log
 
 # Delivery artifacts
 history-preview-check.png

@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   BadgeDollarSign,
+  BookOpenText,
   CheckCircle2,
   ChevronDown,
   CloudRain,
@@ -222,6 +223,7 @@ export function ChatWorkspace({
   const [secondaryTab, setSecondaryTab] = useState<SecondaryWorkbenchTab>("railway");
   const [railwaySortMode, setRailwaySortMode] = useState<RailwaySortMode>("recommended");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [readerMessage, setReaderMessage] = useState<{ role: "assistant"; content: string; index: number } | null>(null);
 
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -480,12 +482,27 @@ export function ChatWorkspace({
 
                 <div className="planner-message-scroll" ref={messageScrollRef}>
                   <div className="planner-message-list">
-                    {messages.map((message, index) => (
-                      <article className={`planner-message-bubble ${message.role}`} key={`${message.role}-${index}`}>
-                        <div className="planner-message-role">{message.role === "user" ? "你" : "TripSage"}</div>
-                        {message.role === "assistant" ? <AnswerRenderer content={message.content} /> : <p>{message.content}</p>}
-                      </article>
-                    ))}
+                    {messages.map((message, index) => {
+                      const canOpenReader = message.role === "assistant" && message.content.trim().length > 0;
+                      return (
+                        <article className={`planner-message-bubble ${message.role}`} key={`${message.role}-${index}`}>
+                          <div className="planner-message-role-row">
+                            <div className="planner-message-role">{message.role === "user" ? "你" : "TripSage"}</div>
+                            {canOpenReader ? (
+                              <button
+                                type="button"
+                                className="planner-message-read-button"
+                                onClick={() => setReaderMessage({ role: "assistant", content: message.content, index })}
+                              >
+                                <BookOpenText size={14} />
+                                阅读全文
+                              </button>
+                            ) : null}
+                          </div>
+                          {message.role === "assistant" ? <AnswerRenderer content={message.content} /> : <p>{message.content}</p>}
+                        </article>
+                      );
+                    })}
                     {loading ? (
                       <article className="planner-message-bubble assistant loading">
                         <div className="planner-message-role">TripSage</div>
@@ -672,6 +689,25 @@ export function ChatWorkspace({
           </div>
         </aside>
       </section>
+      {readerMessage ? (
+        <div className="planner-reader-overlay" role="dialog" aria-modal="true" aria-label="AI 回复全文">
+          <button type="button" className="planner-reader-backdrop" onClick={() => setReaderMessage(null)} aria-label="关闭全文阅读" />
+          <section className="planner-reader-panel">
+            <header className="planner-reader-head">
+              <div>
+                <span>TripSage 回复</span>
+                <strong>第 {readerMessage.index + 1} 条消息全文</strong>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setReaderMessage(null)} aria-label="关闭全文阅读">
+                <X size={16} />
+              </button>
+            </header>
+            <div className="planner-reader-body">
+              <AnswerRenderer content={readerMessage.content} />
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     embedding_base_url: str = ""
 
     amap_api_key: str = ""
+    amap_js_api_key: str = ""
+    amap_security_js_code: str = ""
 
     mcp_12306_enabled: bool = True
     mcp_12306_config_path: str = str(ROOT_DIR / "mcp_servers.json")

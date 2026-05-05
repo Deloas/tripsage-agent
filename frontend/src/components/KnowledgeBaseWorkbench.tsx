@@ -1,22 +1,28 @@
 ﻿import {
   ArrowUpRight,
+  ArrowDown,
+  ArrowUp,
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
   DatabaseZap,
   Layers3,
   Link2,
+  Loader2,
   MapPinned,
   PanelRightOpen,
   RefreshCw,
+  Route,
   Search,
+  SendHorizonal,
   Sparkles,
+  TrainFront,
   X,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-import { fetchGuideDetail, fetchGuideLibrary } from "../lib/api";
-import type { GuideDetail, GuideLibraryResult, GuideSourceItem } from "../lib/types";
+import { fetchGuideDetail, fetchGuideLibrary, fetchGuideRoutePreview } from "../lib/api";
+import type { GuideDetail, GuideLibraryResult, GuideRoutePreviewResult, GuideSourceItem, RailwayQueryResult } from "../lib/types";
 
 interface KnowledgeBaseWorkbenchProps {
   guideSources: GuideSourceItem[];
@@ -31,6 +37,11 @@ interface KnowledgeBaseWorkbenchProps {
   onOpenImportRecord?: (recordId: number) => void;
   onGuideQuickAsk?: (guide: GuideDetail, prompt: string) => void;
   onOpenPlanningWorkspace?: () => void;
+  onOpenRailwayWorkspace?: () => void;
+  onQueryRailwayFromGuide?: (
+    guide: GuideDetail,
+    payload: { origin: string; destination: string; date: string },
+  ) => Promise<RailwayQueryResult>;
   activeReferencedGuide?: GuideDetail | null;
   preselectedGuideRequest?: {
     guideId: number;
@@ -64,6 +75,10 @@ export function KnowledgeBaseWorkbench({
   onOptimizeGuide,
   onSetPrimaryGuide,
   onOpenImportRecord,
+  onGuideQuickAsk,
+  onOpenPlanningWorkspace,
+  onOpenRailwayWorkspace,
+  onQueryRailwayFromGuide,
   activeReferencedGuide,
   preselectedGuideRequest,
 }: KnowledgeBaseWorkbenchProps) {
@@ -81,6 +96,9 @@ export function KnowledgeBaseWorkbench({
   const [selectedGuide, setSelectedGuide] = useState<GuideDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [previewImage, setPreviewImage] = useState<{ url: string; label: string } | null>(null);
+  const [routePreview, setRoutePreview] = useState<GuideRoutePreviewResult | null>(null);
+  const [routePreviewLoading, setRoutePreviewLoading] = useState(false);
+  const [routePreviewError, setRoutePreviewError] = useState<string | null>(null);
 
   const indexedCount = guideSources.filter((item) => item.crawl_status === "indexed").length;
   const failedCount = guideSources.filter((item) => item.crawl_status === "failed" || item.crawl_status === "blocked").length;
@@ -128,8 +146,12 @@ export function KnowledgeBaseWorkbench({
   useEffect(() => {
     if (!selectedGuideId) {
       setSelectedGuide(null);
+      setRoutePreview(null);
+      setRoutePreviewError(null);
       return;
     }
+    setRoutePreview(null);
+    setRoutePreviewError(null);
     const guideId = selectedGuideId;
     let cancelled = false;
     async function loadGuideDetail() {
@@ -138,6 +160,26 @@ export function KnowledgeBaseWorkbench({
         const result = await fetchGuideDetail(guideId);
         if (!cancelled) {
           setSelectedGuide(result);
+          if (extractGuideMobilityNodeNames(result).length) {
+            setRoutePreviewLoading(true);
+            void fetchGuideRoutePreview(guideId)
+              .then((preview) => {
+                if (!cancelled) {
+                  setRoutePreview(preview);
+                  setRoutePreviewError(null);
+                }
+              })
+              .catch(() => {
+                if (!cancelled) {
+                  setRoutePreviewError("已识别攻略地点，可手动重试生成高德路线。");
+                }
+              })
+              .finally(() => {
+                if (!cancelled) {
+                  setRoutePreviewLoading(false);
+                }
+              });
+          }
         }
       } catch {
         if (!cancelled) {
@@ -180,6 +222,20 @@ export function KnowledgeBaseWorkbench({
     if (!selectedGuide) return;
     onUseGuide(selectedGuide);
     setSelectedGuideId(null);
+  }
+
+  async function handleBuildRoutePreview() {
+    if (!selectedGuide) return;
+    setRoutePreviewLoading(true);
+    setRoutePreviewError(null);
+    try {
+      const result = await fetchGuideRoutePreview(selectedGuide.id);
+      setRoutePreview(result);
+    } catch {
+      setRoutePreviewError("攻略地图暂时生成失败，请确认地图接口配置和后端服务状态。");
+    } finally {
+      setRoutePreviewLoading(false);
+    }
   }
 
   const filterSummary = useMemo(() => {
@@ -485,6 +541,32 @@ export function KnowledgeBaseWorkbench({
                   </div>
                 </section>
 
+                <section className="knowledge-detail-section knowledge-map-section">
+                  <div className="knowledge-detail-section-head">
+                    <strong>攻略地图</strong>
+                    <button
+                      type="button"
+                      className="secondary-action compact"
+                      onClick={handleBuildRoutePreview}
+                      disabled={routePreviewLoading || !extractGuideMobilityNodeNames(selectedGuide).length}
+                    >
+                      {routePreviewLoading ? <Loader2 size={14} className="spin" /> : <Route size={14} />}
+                      生成路线预览
+                    </button>
+                  </div>
+                  <GuideRoutePreviewPanel
+                    guide={selectedGuide}
+                    routePreview={routePreview}
+                    loading={routePreviewLoading}
+                    error={routePreviewError}
+                    onBuild={handleBuildRoutePreview}
+                    onGuideQuickAsk={onGuideQuickAsk}
+                    onOpenPlanningWorkspace={onOpenPlanningWorkspace}
+                    onOpenRailwayWorkspace={onOpenRailwayWorkspace}
+                    onQueryRailwayFromGuide={onQueryRailwayFromGuide}
+                  />
+                </section>
+
                 <section className="knowledge-detail-section knowledge-import-audit-section">
                   <div className="knowledge-detail-section-head">
                     <strong>导入质检</strong>
@@ -616,6 +698,280 @@ function StructuredList({ title, items }: { title: string; items: string[] }) {
       ) : (
         <div className="knowledge-facet-empty">暂无提取结果</div>
       )}
+    </div>
+  );
+}
+
+function GuideRoutePreviewPanel({
+  guide,
+  routePreview,
+  loading,
+  error,
+  onBuild,
+  onGuideQuickAsk,
+  onOpenPlanningWorkspace,
+  onOpenRailwayWorkspace,
+  onQueryRailwayFromGuide,
+}: {
+  guide: GuideDetail;
+  routePreview: GuideRoutePreviewResult | null;
+  loading: boolean;
+  error: string | null;
+  onBuild: () => void;
+  onGuideQuickAsk?: (guide: GuideDetail, prompt: string) => void;
+  onOpenPlanningWorkspace?: () => void;
+  onOpenRailwayWorkspace?: () => void;
+  onQueryRailwayFromGuide?: (
+    guide: GuideDetail,
+    payload: { origin: string; destination: string; date: string },
+  ) => Promise<RailwayQueryResult>;
+}) {
+  const candidateNodes = extractGuideMobilityNodeNames(guide);
+  const sourceNodes = routePreview?.nodes.length
+    ? routePreview.nodes
+    : candidateNodes.map((name) => ({ name, type: "待预览", city: guide.city, source: "guide" }));
+  const [orderedNodes, setOrderedNodes] = useState(sourceNodes);
+  const [railwayOrigin, setRailwayOrigin] = useState("");
+  const [railwayDate, setRailwayDate] = useState("");
+  const [railwayLoading, setRailwayLoading] = useState(false);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const nodeCount = sourceNodes.length;
+  const routeDayGroups = buildRouteDayGroups(orderedNodes, guide.days || guide.structured?.days || 1);
+  const railwayDestination = routePreview?.railway_seed.destination || guide.city || "";
+  const railwayStation = routePreview?.railway_seed.destination_station || railwayDestination;
+
+  useEffect(() => {
+    setOrderedNodes(sourceNodes);
+    setActionNotice(null);
+  }, [routePreview?.guide_id, routePreview?.nodes.length, guide.id]);
+
+  function moveNode(index: number, direction: -1 | 1) {
+    setOrderedNodes((current) => {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= current.length) return current;
+      const next = [...current];
+      const item = next[index];
+      next[index] = next[nextIndex];
+      next[nextIndex] = item;
+      return next;
+    });
+  }
+
+  function sendMapToAgent() {
+    if (!onGuideQuickAsk) return;
+    onGuideQuickAsk(guide, buildGuideMapPrompt(guide, orderedNodes, routePreview));
+    onOpenPlanningWorkspace?.();
+  }
+
+  async function syncRailway() {
+    if (!onQueryRailwayFromGuide || !railwayOrigin.trim() || !railwayDate.trim() || !railwayDestination) return;
+    setRailwayLoading(true);
+    setActionNotice(null);
+    try {
+      const result = await onQueryRailwayFromGuide(guide, {
+        origin: railwayOrigin.trim(),
+        destination: railwayDestination,
+        date: railwayDate.trim(),
+      });
+      setActionNotice(`已同步到铁路工作台：${result.trains.length} 条车次候选。`);
+      onOpenRailwayWorkspace?.();
+    } catch {
+      setActionNotice("铁路同步失败，请检查 12306 MCP 或日期条件后重试。");
+    } finally {
+      setRailwayLoading(false);
+    }
+  }
+
+  return (
+    <div className="guide-mobility-panel knowledge-guide-map-panel">
+      <div className="guide-mobility-head">
+        <div>
+          <span className="section-kicker">
+            <MapPinned size={14} />
+            地图路线
+          </span>
+          <strong>{nodeCount ? `${nodeCount} 个地点可用于路线预览` : "暂未识别到可预览地点"}</strong>
+        </div>
+        <button type="button" className="primary-action compact" onClick={onBuild} disabled={loading || !nodeCount}>
+          {loading ? <Loader2 size={14} className="spin" /> : <MapPinned size={14} />}
+          {routePreview ? "重新生成" : "查看攻略地图"}
+        </button>
+      </div>
+
+      <div className="guide-mobility-node-strip">
+        {orderedNodes.length
+          ? orderedNodes.map((node, index) => (
+            <div className={`guide-mobility-node ${routePreview ? "" : "muted"}`} key={`${node.name}-${index}`}>
+              <span>{index + 1}</span>
+              <strong>{node.name}</strong>
+              <em>{node.type || (routePreview ? "地点" : "待预览")}</em>
+            </div>
+          ))
+          : null}
+        {!nodeCount ? <div className="summary-list-empty compact-empty">这篇攻略还没有抽取到足够的地点，可先编辑攻略补充景点或路线节点。</div> : null}
+      </div>
+
+      {error ? <div className="guide-mobility-error">{error}</div> : null}
+
+      {orderedNodes.length ? (
+        <div className="guide-route-preview-card">
+          <div className="guide-route-canvas knowledge-route-canvas" aria-label="攻略地图路线预览">
+            {orderedNodes.map((node, index) => (
+              <div
+                className="guide-route-pin"
+                style={{
+                  left: `${12 + (index % 4) * 24}%`,
+                  top: `${20 + Math.floor(index / 4) * 32 + (index % 2) * 6}%`,
+                }}
+                key={`${node.name}-${index}`}
+              >
+                <span>{index + 1}</span>
+                <strong>{node.name}</strong>
+              </div>
+            ))}
+          </div>
+          {routePreview ? (
+            <>
+              <div className="guide-route-summary">
+                <div>
+                  <span>总通勤</span>
+                  <strong>{formatMeters(routePreview.total_distance_meters)} · {routePreview.total_duration_minutes || 0} 分钟</strong>
+                </div>
+                <div>
+                  <span>路线段</span>
+                  <strong>{routePreview.routes.length} 段</strong>
+                </div>
+                <div>
+                  <span>数据源</span>
+                  <strong>{routePreview.fallback ? "兜底预览" : "高德地图"}</strong>
+                </div>
+              </div>
+              <div className="guide-route-leg-list">
+                {routePreview.routes.map((route) => (
+                  <article key={route.index}>
+                    <strong>{route.origin.name} → {route.destination.name}</strong>
+                    <span>{formatMeters(route.distance_meters || 0)} / {route.duration_minutes || 0} 分钟</span>
+                  </article>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="knowledge-route-action-notice">已根据攻略地点生成路线草图，点击生成路线预览可补充真实通勤距离与耗时。</div>
+          )}
+
+          <div className="knowledge-route-product-grid">
+            <section className="knowledge-route-day-board" aria-label="按天路线">
+              <div className="knowledge-route-panel-head">
+                <strong>按天路线</strong>
+                <span>{routeDayGroups.length} 天</span>
+              </div>
+              <div className="knowledge-route-day-list">
+                {routeDayGroups.map((group) => (
+                  <article key={group.day}>
+                    <span>Day {group.day}</span>
+                    <strong>{group.nodes.map((node) => node.name).join(" → ")}</strong>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="knowledge-route-order-board" aria-label="地点顺序调整">
+              <div className="knowledge-route-panel-head">
+                <strong>地点顺序</strong>
+                <span>可调整后交给智能体优化</span>
+              </div>
+              <div className="knowledge-route-order-list">
+                {orderedNodes.map((node, index) => (
+                  <article key={`${node.name}-${index}`}>
+                    <span>{index + 1}</span>
+                    <strong>{node.name}</strong>
+                    <div>
+                      <button type="button" className="icon-button mini" onClick={() => moveNode(index, -1)} disabled={index === 0} aria-label="上移地点">
+                        <ArrowUp size={13} />
+                      </button>
+                      <button type="button" className="icon-button mini" onClick={() => moveNode(index, 1)} disabled={index === orderedNodes.length - 1} aria-label="下移地点">
+                        <ArrowDown size={13} />
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          <div className="knowledge-route-railway-hint">
+            <TrainHint
+              origin={railwayOrigin}
+              date={railwayDate}
+              destination={railwayDestination}
+              station={railwayStation}
+              loading={railwayLoading}
+              canSync={Boolean(onQueryRailwayFromGuide)}
+              onOriginChange={setRailwayOrigin}
+              onDateChange={setRailwayDate}
+              onSync={syncRailway}
+            />
+          </div>
+
+          <div className="knowledge-route-action-row">
+            <button type="button" className="primary-action" onClick={sendMapToAgent} disabled={!onGuideQuickAsk}>
+              <SendHorizonal size={15} />
+              用该路线继续优化
+            </button>
+            <button type="button" className="secondary-action" onClick={onOpenPlanningWorkspace} disabled={!onOpenPlanningWorkspace}>
+              <Route size={15} />
+              打开规划页
+            </button>
+          </div>
+          {actionNotice ? <div className="knowledge-route-action-notice">{actionNotice}</div> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TrainHint({
+  origin,
+  date,
+  destination,
+  station,
+  loading,
+  canSync,
+  onOriginChange,
+  onDateChange,
+  onSync,
+}: {
+  origin: string;
+  date: string;
+  destination: string;
+  station: string;
+  loading: boolean;
+  canSync: boolean;
+  onOriginChange: (value: string) => void;
+  onDateChange: (value: string) => void;
+  onSync: () => void;
+}) {
+  return (
+    <div className="guide-railway-seed-panel knowledge-route-train-hint">
+      <div className="guide-railway-seed-copy">
+        <span>铁路条件</span>
+        <strong>{station || destination || "目的地待识别"}</strong>
+        <p>补充出发地和日期后，可把目的地条件直接带入 12306 工作台。</p>
+      </div>
+      <div className="guide-railway-form knowledge-route-railway-form">
+        <label>
+          <span>出发城市</span>
+          <input value={origin} onChange={(event) => onOriginChange(event.target.value)} placeholder="例如：上海" />
+        </label>
+        <label>
+          <span>日期</span>
+          <input value={date} onChange={(event) => onDateChange(event.target.value)} placeholder="例如：2026-05-10" />
+        </label>
+        <button type="button" className="primary-action" onClick={onSync} disabled={loading || !canSync || !origin.trim() || !date.trim() || !destination}>
+          {loading ? <Loader2 size={15} className="spin" /> : <TrainFront size={15} />}
+          同步铁路
+        </button>
+      </div>
     </div>
   );
 }
@@ -818,6 +1174,57 @@ function formatAuditDate(value?: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function extractGuideMobilityNodeNames(guide: GuideDetail): string[] {
+  const structured = guide.structured || {};
+  const values = [
+    ...(structured.route_nodes || []),
+    ...(structured.scenic_spots || []),
+    ...(structured.food_spots || []),
+    ...(guide.places || []).map((place) => place.name),
+  ];
+  return Array.from(new Set(values.map((item) => String(item || "").trim()).filter(Boolean))).slice(0, 10);
+}
+
+function formatMeters(value: number) {
+  if (!value) return "0m";
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}km`;
+  return `${value}m`;
+}
+
+function buildRouteDayGroups(nodes: GuideRoutePreviewResult["nodes"], days: number) {
+  const safeDays = Math.max(1, Math.min(days || 1, nodes.length || 1));
+  const groupSize = Math.max(1, Math.ceil((nodes.length || 1) / safeDays));
+  return Array.from({ length: safeDays }, (_, index) => ({
+    day: index + 1,
+    nodes: nodes.slice(index * groupSize, (index + 1) * groupSize),
+  })).filter((group) => group.nodes.length);
+}
+
+function buildGuideMapPrompt(
+  guide: GuideDetail,
+  nodes: GuideRoutePreviewResult["nodes"],
+  routePreview: GuideRoutePreviewResult | null,
+) {
+  const orderedRoute = nodes.map((node, index) => `${index + 1}. ${node.name}`).join("\n");
+  const legSummary = routePreview?.routes.length
+    ? routePreview.routes.map((route) => (
+      `${route.origin.name} → ${route.destination.name}：${formatMeters(route.distance_meters || 0)} / ${route.duration_minutes || 0} 分钟`
+    )).join("\n")
+    : "暂未生成精确路线段，请根据地点顺序做合理估算。";
+
+  return [
+    `请基于《${guide.title}》和我在攻略地图中调整后的地点顺序，继续优化旅行方案。`,
+    "",
+    "调整后的地点顺序：",
+    orderedRoute || "暂无地点",
+    "",
+    "当前路线段参考：",
+    legSummary,
+    "",
+    "请输出：按天行程、每段交通建议、是否需要删减地点、雨天备选、预算影响和风险提醒。",
+  ].join("\n");
 }
 
 function formatBudgetRange(min?: number | null, max?: number | null) {

@@ -17,6 +17,7 @@ class TripAgentState(TypedDict, total=False):
     retrieved_guides: list[dict]
     guide_items: list
     guide_coverage: dict
+    planning_place_pool: list[dict]
     web_search_reason: str
     web_items: list
     railway_results: list[dict]
@@ -28,6 +29,7 @@ class TripAgentState(TypedDict, total=False):
     tool_calls: list[dict]
     tool_calls_view: list
     itinerary: list
+    structured_plan: dict
     cards: list
     sources: list
     decision_modules: list

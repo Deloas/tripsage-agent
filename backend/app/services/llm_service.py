@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any
 
 import httpx
@@ -98,14 +99,10 @@ class LlmService:
         )
         if not content:
             return None
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.strip("`")
-            cleaned = cleaned.replace("json", "", 1).strip()
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            return None
+        parsed = self._parse_json_response(content)
+        if parsed is None:
+            logger.warning("LLM JSON 解析失败，原始回复前 400 字符：{}", content[:400])
+        return parsed
 
     async def vision_plain_chat(self, prompt: str, image_urls: list[str]) -> str | None:
         """尝试通过多模态接口直接读取图片中的攻略文本。"""
@@ -131,3 +128,41 @@ class LlmService:
             ],
             temperature=0.3,
         )
+
+    def _parse_json_response(self, content: str) -> dict[str, Any] | None:
+        """中文注释：对大模型回复做宽松 JSON 抽取，避免因少量前后缀就整段失效。"""
+        cleaned = self._strip_markdown_fence(content)
+        direct = self._try_load_json(cleaned)
+        if direct is not None:
+            return direct
+
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"[\{\[]", cleaned):
+            fragment = cleaned[match.start() :].strip()
+            try:
+                parsed, _ = decoder.raw_decode(fragment)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return self._try_load_json(cleaned[start : end + 1])
+        return None
+
+    def _strip_markdown_fence(self, content: str) -> str:
+        cleaned = content.strip()
+        if not cleaned.startswith("```"):
+            return cleaned
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+        return cleaned.strip()
+
+    def _try_load_json(self, content: str) -> dict[str, Any] | None:
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None

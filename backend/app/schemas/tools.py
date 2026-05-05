@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from app.schemas.chat import StructuredTravelPlan
+
 
 class WeatherRequest(BaseModel):
     """天气查询请求。"""
@@ -29,6 +31,32 @@ class RouteRequest(BaseModel):
     destination: str = Field(min_length=1, max_length=120)
     city: str | None = None
     mode: str = "transit"
+
+
+class AiMapItineraryItem(BaseModel):
+    """AI 行程中的单个安排，用于从回答结果里抽取地图地点。"""
+
+    time: str | None = None
+    title: str = Field(default="", max_length=240)
+    detail: str = Field(default="", max_length=4000)
+
+
+class AiMapItineraryDay(BaseModel):
+    """AI 行程中的一天，用于生成地图按天分组。"""
+
+    day: int = 1
+    title: str = Field(default="", max_length=240)
+    items: list[AiMapItineraryItem] = Field(default_factory=list)
+
+
+class AiMapWorkbenchRequest(BaseModel):
+    """把智能体输出转换为地图工作台的请求。"""
+
+    city: str | None = Field(default=None, max_length=80)
+    answer: str = Field(default="", max_length=50000)
+    itinerary: list[AiMapItineraryDay] = Field(default_factory=list)
+    structured_plan: StructuredTravelPlan | None = None
+    mode: str = "driving"
 
 
 class RailwayRequest(BaseModel):

@@ -35,6 +35,78 @@ export interface RailwayTrain {
   seats?: Record<string, string>;
 }
 
+export interface RailwayQueryResult {
+  provider?: string;
+  origin?: string;
+  destination?: string;
+  date?: string;
+  trains: RailwayTrain[];
+  fallback?: boolean;
+  notice?: string;
+  reason?: string;
+  tool_name?: string;
+}
+
+export interface AmapClientConfig {
+  provider: "amap" | string;
+  js_api_key?: string;
+  security_js_code?: string;
+  configured: boolean;
+  web_service_configured: boolean;
+}
+
+export interface AiMapPoint {
+  name: string;
+  query: string;
+  day?: number | null;
+  source?: string | null;
+  city?: string | null;
+  district?: string | null;
+  address?: string | null;
+  type?: string | null;
+  location?: string | null;
+  lng?: number | null;
+  lat?: number | null;
+  fallback?: boolean;
+  confidence?: number;
+  score?: number;
+}
+
+export interface AiMapRouteLeg {
+  index: number;
+  origin: AiMapPoint;
+  destination: AiMapPoint;
+  mode?: string | null;
+  mode_used?: string | null;
+  distance_meters: number;
+  duration_minutes: number;
+  steps: Array<{
+    instruction?: string | null;
+    road?: string | null;
+    distance_meters?: number | null;
+    duration_seconds?: number | null;
+  }>;
+  fallback?: boolean;
+  reason?: string | null;
+}
+
+export interface AiMapWorkbenchResult {
+  city?: string | null;
+  mode: string;
+  points: AiMapPoint[];
+  routes: AiMapRouteLeg[];
+  total_distance_meters: number;
+  total_duration_minutes: number;
+  fallback: boolean;
+  source: string;
+  diagnostics: {
+    candidate_count: number;
+    resolved_count: number;
+    has_js_key: boolean;
+    web_service_configured: boolean;
+  };
+}
+
 export interface ItineraryItem {
   time: string;
   title: string;
@@ -45,6 +117,44 @@ export interface ItineraryBlock {
   day: number;
   title: string;
   items: ItineraryItem[];
+}
+
+export interface StructuredAgendaItem {
+  time?: string;
+  title: string;
+  detail: string;
+  place_name?: string | null;
+  transport_hint?: string | null;
+}
+
+export interface StructuredPlaceBrief {
+  name: string;
+  aliases?: string[];
+  intro?: string;
+  category?: string | null;
+  stay_minutes?: number | null;
+  transport_hint?: string | null;
+  order?: number | null;
+}
+
+export interface StructuredPlanDay {
+  day: number;
+  title: string;
+  summary?: string;
+  route_digest?: string;
+  agenda: StructuredAgendaItem[];
+  places: StructuredPlaceBrief[];
+}
+
+export interface StructuredTravelPlan {
+  city?: string | null;
+  trip_summary?: string;
+  planning_style?: string;
+  budget_hint?: string;
+  transport_hint?: string;
+  rainy_day_hint?: string;
+  risk_hint?: string;
+  days: StructuredPlanDay[];
 }
 
 export interface DecisionModule {
@@ -62,6 +172,7 @@ export interface ChatResponse {
   intent: string;
   cards: ResultCard[];
   itinerary?: ItineraryBlock[] | null;
+  structured_plan?: StructuredTravelPlan | null;
   tool_calls: ToolCall[];
   sources: SourceRef[];
   warnings: string[];
@@ -462,6 +573,53 @@ export interface GuideDetail {
     place_type?: string | null;
     address?: string | null;
   }>;
+}
+
+export interface GuideRoutePreviewNode {
+  name: string;
+  type?: string | null;
+  city?: string | null;
+  source?: string | null;
+}
+
+export interface GuideRoutePreviewLeg {
+  index: number;
+  origin: GuideRoutePreviewNode;
+  destination: GuideRoutePreviewNode;
+  provider?: string | null;
+  mode?: string | null;
+  mode_used?: string | null;
+  distance_meters?: number | null;
+  duration_minutes?: number | null;
+  steps: Array<{
+    instruction?: string | null;
+    road?: string | null;
+    distance_meters?: number | null;
+    duration_seconds?: number | null;
+  }>;
+  fallback?: boolean;
+  reason?: string | null;
+}
+
+export interface GuideRoutePreviewResult {
+  guide_id: number;
+  title: string;
+  city: string;
+  mode: string;
+  nodes: GuideRoutePreviewNode[];
+  routes: GuideRoutePreviewLeg[];
+  total_distance_meters: number;
+  total_duration_minutes: number;
+  fallback: boolean;
+  railway_seed: {
+    origin: string;
+    destination: string;
+    destination_station: string;
+    date: string;
+    guide_id?: number | null;
+    guide_title?: string | null;
+    hint?: string | null;
+  };
 }
 
 export interface GuideUpdatePayload {

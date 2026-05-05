@@ -13,6 +13,7 @@ from app.schemas.guides import (
 from app.services.guide_ingest_service import GuideIngestService
 from app.services.guide_import_task_service import GuideImportTaskService, run_guide_import_preview_task
 from app.services.guide_link_import_service import GuideLinkImportService
+from app.services.guide_mobility_service import GuideMobilityService
 from app.services.rag_service import RagService
 from app.services.weibo_crawler_service import WeiboCrawlerService
 
@@ -183,6 +184,22 @@ def get_guide_detail(guide_id: int, db: Session = Depends(get_db)):
     if not detail:
         return fail(4040, "未找到对应攻略", {"guide_id": guide_id})
     return ok(detail)
+
+
+@router.get("/guides/{guide_id}/mobility/route-preview")
+async def get_guide_route_preview(
+    guide_id: int,
+    mode: str = Query(default="driving", pattern="^(driving|walking|transit|walk)$"),
+    db: Session = Depends(get_db),
+):
+    """把攻略详情中的地点抽取结果转成地图路线预览。"""
+    try:
+        result = await GuideMobilityService(db).build_route_preview(guide_id, mode=mode)
+    except Exception as exc:  # noqa: BLE001
+        return fail(5003, "攻略地图路线预览生成失败", {"error": str(exc), "guide_id": guide_id})
+    if not result:
+        return fail(4040, "未找到对应攻略", {"guide_id": guide_id})
+    return ok(result)
 
 
 @router.put("/guides/{guide_id}")

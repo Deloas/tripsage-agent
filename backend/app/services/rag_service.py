@@ -124,12 +124,14 @@ class RagService:
     def _keyword_search(self, query: str, city: str | None = None, limit: int = 80) -> list[GuideSearchItem]:
         """SQLite 关键词兜底检索。"""
         tokens = tokenize_query(query)
-        filters = []
+        token_filters = []
         if city:
-            filters.append(Guide.city.like(f"%{city}%"))
+            city_filter = Guide.city.like(f"%{city}%")
+        else:
+            city_filter = None
         for token in tokens[:12]:
-            filters.append(GuideChunk.content.like(f"%{token}%"))
-            filters.append(Guide.title.like(f"%{token}%"))
+            token_filters.append(GuideChunk.content.like(f"%{token}%"))
+            token_filters.append(Guide.title.like(f"%{token}%"))
 
         stmt = (
             select(GuideChunk, Guide, GuideSource)
@@ -137,8 +139,10 @@ class RagService:
             .join(GuideSource, GuideSource.id == Guide.source_id)
             .limit(limit)
         )
-        if filters:
-            stmt = stmt.where(or_(*filters))
+        if city_filter is not None:
+            stmt = stmt.where(city_filter)
+        if token_filters:
+            stmt = stmt.where(or_(*token_filters))
 
         rows = self.db.execute(stmt).all()
         ranked: list[GuideSearchItem] = []

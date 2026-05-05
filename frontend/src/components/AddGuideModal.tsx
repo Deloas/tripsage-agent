@@ -10,8 +10,10 @@ import {
   Loader2,
   MapPinned,
   RefreshCw,
+  Route,
   ScanSearch,
   Sparkles,
+  TrainFront,
   Trash2,
   WandSparkles,
   X,
@@ -24,7 +26,9 @@ import type {
   GuideImportTaskItem,
   GuideLinkImportResult,
   GuideLinkPreviewResult,
+  GuideRoutePreviewResult,
   GuideStructuredDraft,
+  RailwayQueryResult,
 } from "../lib/types";
 
 interface AddGuideModalProps {
@@ -58,6 +62,11 @@ interface AddGuideModalProps {
   onUseImportedGuide: (guide: GuideDetail) => void;
   onOptimizeImportedGuide: (guide: GuideDetail) => void;
   onSetPrimaryGuide: (guide: GuideDetail) => void;
+  onBuildRoutePreview: (guide: GuideDetail) => Promise<GuideRoutePreviewResult>;
+  onQueryRailwayFromGuide: (
+    guide: GuideDetail,
+    payload: { origin: string; destination: string; date: string },
+  ) => Promise<RailwayQueryResult>;
 }
 
 type ImportMode = "link" | "manual";
@@ -107,6 +116,8 @@ export function AddGuideModal({
   onUseImportedGuide,
   onOptimizeImportedGuide,
   onSetPrimaryGuide,
+  onBuildRoutePreview,
+  onQueryRailwayFromGuide,
 }: AddGuideModalProps) {
   const [mode, setMode] = useState<ImportMode>("link");
   const [manualTitle, setManualTitle] = useState("");
@@ -121,6 +132,12 @@ export function AddGuideModal({
   const [previewImage, setPreviewImage] = useState<ImagePreviewState>(null);
   const [historyView, setHistoryView] = useState<HistoryView>("list");
   const [selectedRecordSnapshot, setSelectedRecordSnapshot] = useState<GuideImportRecordItem | null>(null);
+  const [routePreview, setRoutePreview] = useState<GuideRoutePreviewResult | null>(null);
+  const [routePreviewLoading, setRoutePreviewLoading] = useState(false);
+  const [railwayOrigin, setRailwayOrigin] = useState("");
+  const [railwayDate, setRailwayDate] = useState("");
+  const [railwayLoading, setRailwayLoading] = useState(false);
+  const [mobilityError, setMobilityError] = useState<string | null>(null);
 
   const selectedRecord = useMemo(
     () => {
@@ -199,6 +216,13 @@ export function AddGuideModal({
       setSelectedRecordSnapshot(importRecords[0]);
     }
   }, [importRecords, importResult?.record?.id, open, preselectedRecordId, previewResult?.record?.id, selectedRecordId]);
+
+  useEffect(() => {
+    setRoutePreview(null);
+    setMobilityError(null);
+    setRailwayOrigin("");
+    setRailwayDate("");
+  }, [importedOrDuplicatedGuide?.id, selectedRecordId]);
 
   useEffect(() => {
     if (!previewResult) {
@@ -345,6 +369,43 @@ export function AddGuideModal({
       setSelectedRecordId(null);
       setSelectedRecordSnapshot(null);
       setHistoryView("list");
+    }
+  }
+
+  async function handleBuildMobilityPreview(guide: GuideDetail) {
+    setRoutePreviewLoading(true);
+    setMobilityError(null);
+    try {
+      const preview = await onBuildRoutePreview(guide);
+      setRoutePreview(preview);
+      if (!railwayDate && preview.railway_seed?.date) {
+        setRailwayDate(preview.railway_seed.date);
+      }
+    } catch {
+      setMobilityError("地图路线预览生成失败，请确认后端和高德地图服务状态。");
+    } finally {
+      setRoutePreviewLoading(false);
+    }
+  }
+
+  async function handleGuideRailwayQuery(guide: GuideDetail) {
+    const destination = routePreview?.railway_seed?.destination || guide.city;
+    if (!railwayOrigin.trim() || !destination || !railwayDate.trim()) {
+      setMobilityError("请先填写出发城市和出行日期，再带入 12306 工作台。");
+      return;
+    }
+    setRailwayLoading(true);
+    setMobilityError(null);
+    try {
+      await onQueryRailwayFromGuide(guide, {
+        origin: railwayOrigin.trim(),
+        destination,
+        date: railwayDate.trim(),
+      });
+    } catch {
+      setMobilityError("12306 查询失败，请检查日期、出发地或 MCP 服务状态。");
+    } finally {
+      setRailwayLoading(false);
     }
   }
 
@@ -658,6 +719,16 @@ export function AddGuideModal({
                     <ImportedGuidePreview
                       guide={importedOrDuplicatedGuide}
                       quality={currentQuality}
+                      routePreview={routePreview}
+                      routePreviewLoading={routePreviewLoading}
+                      railwayOrigin={railwayOrigin}
+                      railwayDate={railwayDate}
+                      railwayLoading={railwayLoading}
+                      mobilityError={mobilityError}
+                      onRailwayOriginChange={setRailwayOrigin}
+                      onRailwayDateChange={setRailwayDate}
+                      onBuildRoutePreview={() => void handleBuildMobilityPreview(importedOrDuplicatedGuide)}
+                      onQueryRailway={() => void handleGuideRailwayQuery(importedOrDuplicatedGuide)}
                       onUseGuide={() => onUseImportedGuide(importedOrDuplicatedGuide)}
                       onOptimizeGuide={() => onOptimizeImportedGuide(importedOrDuplicatedGuide)}
                       onSetPrimaryGuide={() => onSetPrimaryGuide(importedOrDuplicatedGuide)}
@@ -869,6 +940,22 @@ export function AddGuideModal({
                     </div>
                   ) : null}
 
+                  {importedOrDuplicatedGuide ? (
+                    <GuideMobilityPanel
+                      guide={importedOrDuplicatedGuide}
+                      routePreview={routePreview}
+                      routePreviewLoading={routePreviewLoading}
+                      railwayOrigin={railwayOrigin}
+                      railwayDate={railwayDate}
+                      railwayLoading={railwayLoading}
+                      mobilityError={mobilityError}
+                      onRailwayOriginChange={setRailwayOrigin}
+                      onRailwayDateChange={setRailwayDate}
+                      onBuildRoutePreview={() => void handleBuildMobilityPreview(importedOrDuplicatedGuide)}
+                      onQueryRailway={() => void handleGuideRailwayQuery(importedOrDuplicatedGuide)}
+                    />
+                  ) : null}
+
                   {selectedRecord.guide_id ? (
                     <div className="guide-import-history-detail-note">
                       <span>关联攻略</span>
@@ -929,12 +1016,32 @@ export function AddGuideModal({
 function ImportedGuidePreview({
   guide,
   quality,
+  routePreview,
+  routePreviewLoading,
+  railwayOrigin,
+  railwayDate,
+  railwayLoading,
+  mobilityError,
+  onRailwayOriginChange,
+  onRailwayDateChange,
+  onBuildRoutePreview,
+  onQueryRailway,
   onUseGuide,
   onOptimizeGuide,
   onSetPrimaryGuide,
 }: {
   guide: GuideDetail;
   quality: GuideLinkImportResult["quality"];
+  routePreview: GuideRoutePreviewResult | null;
+  routePreviewLoading: boolean;
+  railwayOrigin: string;
+  railwayDate: string;
+  railwayLoading: boolean;
+  mobilityError: string | null;
+  onRailwayOriginChange: (value: string) => void;
+  onRailwayDateChange: (value: string) => void;
+  onBuildRoutePreview: () => void;
+  onQueryRailway: () => void;
   onUseGuide: () => void;
   onOptimizeGuide: () => void;
   onSetPrimaryGuide: () => void;
@@ -969,6 +1076,20 @@ function ImportedGuidePreview({
         <p>{guide.content}</p>
       </div>
 
+      <GuideMobilityPanel
+        guide={guide}
+        routePreview={routePreview}
+        routePreviewLoading={routePreviewLoading}
+        railwayOrigin={railwayOrigin}
+        railwayDate={railwayDate}
+        railwayLoading={railwayLoading}
+        mobilityError={mobilityError}
+        onRailwayOriginChange={onRailwayOriginChange}
+        onRailwayDateChange={onRailwayDateChange}
+        onBuildRoutePreview={onBuildRoutePreview}
+        onQueryRailway={onQueryRailway}
+      />
+
       <div className="imported-guide-actions">
         <button type="button" className="secondary-action" onClick={onUseGuide}>
           应用到当前规划
@@ -980,6 +1101,137 @@ function ImportedGuidePreview({
           设为主参考攻略
         </button>
       </div>
+    </section>
+  );
+}
+
+function GuideMobilityPanel({
+  guide,
+  routePreview,
+  routePreviewLoading,
+  railwayOrigin,
+  railwayDate,
+  railwayLoading,
+  mobilityError,
+  onRailwayOriginChange,
+  onRailwayDateChange,
+  onBuildRoutePreview,
+  onQueryRailway,
+}: {
+  guide: GuideDetail;
+  routePreview: GuideRoutePreviewResult | null;
+  routePreviewLoading: boolean;
+  railwayOrigin: string;
+  railwayDate: string;
+  railwayLoading: boolean;
+  mobilityError: string | null;
+  onRailwayOriginChange: (value: string) => void;
+  onRailwayDateChange: (value: string) => void;
+  onBuildRoutePreview: () => void;
+  onQueryRailway: () => void;
+}) {
+  const nodeCount = routePreview?.nodes.length || extractGuideMobilityNodeNames(guide).length;
+  const destination = routePreview?.railway_seed.destination || guide.city || "";
+  return (
+    <section className="guide-mobility-panel">
+      <div className="guide-mobility-head">
+        <div>
+          <span className="section-kicker">
+            <MapPinned size={14} />
+            出行联动
+          </span>
+          <strong>地图路线与 12306 查询条件</strong>
+        </div>
+        <button type="button" className="secondary-action compact" onClick={onBuildRoutePreview} disabled={routePreviewLoading || !nodeCount}>
+          {routePreviewLoading ? <Loader2 size={14} className="spin" /> : <Route size={14} />}
+          生成路线预览
+        </button>
+      </div>
+
+      <div className="guide-mobility-node-strip">
+        {routePreview?.nodes.length
+          ? routePreview.nodes.map((node, index) => (
+            <div className="guide-mobility-node" key={`${node.name}-${index}`}>
+              <span>{index + 1}</span>
+              <strong>{node.name}</strong>
+              <em>{node.type || "poi"}</em>
+            </div>
+          ))
+          : extractGuideMobilityNodeNames(guide).slice(0, 6).map((name, index) => (
+            <div className="guide-mobility-node muted" key={`${name}-${index}`}>
+              <span>{index + 1}</span>
+              <strong>{name}</strong>
+              <em>待预览</em>
+            </div>
+          ))}
+        {!nodeCount ? <div className="summary-list-empty compact-empty">这篇攻略暂未抽取到可用于路线预览的地点。</div> : null}
+      </div>
+
+      {routePreview ? (
+        <div className="guide-route-preview-card">
+          <div className="guide-route-canvas" aria-label="地图路线预览">
+            {routePreview.nodes.map((node, index) => (
+              <div
+                className="guide-route-pin"
+                style={{
+                  left: `${12 + (index % 4) * 24}%`,
+                  top: `${22 + Math.floor(index / 4) * 34 + (index % 2) * 6}%`,
+                }}
+                key={`${node.name}-${index}`}
+              >
+                <span>{index + 1}</span>
+                <strong>{node.name}</strong>
+              </div>
+            ))}
+          </div>
+          <div className="guide-route-summary">
+            <div>
+              <span>总通勤</span>
+              <strong>{formatMeters(routePreview.total_distance_meters)} · {routePreview.total_duration_minutes || 0} 分钟</strong>
+            </div>
+            <div>
+              <span>路线段</span>
+              <strong>{routePreview.routes.length} 段</strong>
+            </div>
+            <div>
+              <span>数据源</span>
+              <strong>{routePreview.fallback ? "演示/兜底" : "高德地图"}</strong>
+            </div>
+          </div>
+          <div className="guide-route-leg-list">
+            {routePreview.routes.map((route) => (
+              <article key={route.index}>
+                <strong>{route.origin.name} → {route.destination.name}</strong>
+                <span>{formatMeters(route.distance_meters || 0)} / {route.duration_minutes || 0} 分钟</span>
+              </article>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="guide-railway-seed-panel">
+        <div className="guide-railway-seed-copy">
+          <span>12306 条件带入</span>
+          <strong>{destination || "目的地待识别"}</strong>
+          <p>{routePreview?.railway_seed.hint || `已从《${guide.title}》识别目的地，补充出发城市和日期后可直接进入铁路工作台。`}</p>
+        </div>
+        <div className="guide-railway-form">
+          <label>
+            <span>出发城市</span>
+            <input value={railwayOrigin} onChange={(event) => onRailwayOriginChange(event.target.value)} placeholder="例如：上海" />
+          </label>
+          <label>
+            <span>日期</span>
+            <input value={railwayDate} onChange={(event) => onRailwayDateChange(event.target.value)} placeholder="例如：2026-05-10 / 周末" />
+          </label>
+          <button type="button" className="primary-action" onClick={onQueryRailway} disabled={railwayLoading || !railwayOrigin.trim() || !railwayDate.trim() || !destination}>
+            {railwayLoading ? <Loader2 size={15} className="spin" /> : <TrainFront size={15} />}
+            带入铁路工作台
+          </button>
+        </div>
+      </div>
+
+      {mobilityError ? <div className="guide-mobility-error">{mobilityError}</div> : null}
     </section>
   );
 }
@@ -1122,6 +1374,23 @@ function cloneStructured(value: GuideStructuredDraft | null | undefined): GuideS
     budget_tips: [...(value?.budget_tips || [])],
     risk_notes: [...(value?.risk_notes || [])],
   };
+}
+
+function extractGuideMobilityNodeNames(guide: GuideDetail): string[] {
+  const structured = guide.structured || {};
+  const values = [
+    ...(structured.route_nodes || []),
+    ...(structured.scenic_spots || []),
+    ...(structured.food_spots || []),
+    ...(guide.places || []).map((place) => place.name),
+  ];
+  return Array.from(new Set(values.map((item) => String(item || "").trim()).filter(Boolean))).slice(0, 8);
+}
+
+function formatMeters(value: number) {
+  if (!value) return "0m";
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}km`;
+  return `${value}m`;
 }
 
 function updateStructuredDraft(
