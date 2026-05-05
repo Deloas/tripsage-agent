@@ -49,6 +49,8 @@ app/services/auth_service.py
 app/services/bootstrap_service.py
 app/services/conversation_service.py
 app/services/guide_ingest_service.py
+app/services/guide_link_import_service.py
+app/services/guide_ocr_service.py
 app/services/llm_service.py
 app/services/mcp_railway_service.py
 app/services/plan_version_service.py
@@ -62,6 +64,7 @@ app/services/weibo_crawler_service.py
 tests/test_agent_rules.py
 tests/test_amap_service.py
 tests/test_decision_modules.py
+tests/test_guide_link_import_service.py
 tests/test_health.py
 tests/test_llm_service.py
 tests/test_plan_version_service.py

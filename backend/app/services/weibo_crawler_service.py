@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db.models import GuideSource
 from app.schemas.guides import GuideCreateRequest
 from app.services.guide_ingest_service import GuideIngestService
+from app.services.guide_link_import_service import GuideLinkImportService
 
 
 WEIBO_GUIDE_INDEX_URL = "https://weibo.com/7896659368/QB5oxASNO"
@@ -115,20 +116,16 @@ class WeiboCrawlerService:
             return response.text
 
     async def _try_fetch_public_post_text(self, url: str) -> str | None:
-        """尝试解析公开微博正文；遇到登录墙、验证码或短文本时返回空。"""
+        """尝试解析公开微博正文，复用更强的链接导入抓取内核。"""
+        helper = GuideLinkImportService(self.db)
         try:
-            page = await self._fetch_public_html(url)
+            snapshot = await helper.fetch_page_snapshot(url, source_type="weibo_link")
         except Exception:  # noqa: BLE001
             return None
 
-        if any(marker in page for marker in ["验证码", "登录后", "安全验证", "抱歉，未找到相关结果"]):
-            return None
-
-        candidates = self._extract_text_candidates(page)
-        for text in candidates:
-            cleaned = self._clean_public_text(text)
-            if len(cleaned) >= 80 and "DOCTYPE html" not in cleaned:
-                return cleaned
+        content = helper._extract_main_content(snapshot.html_text)
+        if len(re.sub(r"\s+", "", content)) >= 80:
+            return content
         return None
 
     def _extract_text_candidates(self, page: str) -> list[str]:

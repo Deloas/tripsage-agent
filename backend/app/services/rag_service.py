@@ -1,3 +1,4 @@
+import json
 import math
 import re
 from collections.abc import Sequence
@@ -5,7 +6,7 @@ from collections.abc import Sequence
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Guide, GuideChunk, GuideSource, Place
+from app.db.models import Guide, GuideChunk, GuideImportRecord, GuideSource, Place
 from app.schemas.common import SourceRef
 from app.schemas.guides import GuideSearchItem
 from app.services.guide_ingest_service import build_structured_guide_data
@@ -269,6 +270,15 @@ class RagService:
             budget_max=guide.budget_max,
             travel_style=guide.travel_style,
         )
+        latest_import_record = (
+            self.db.execute(
+                select(GuideImportRecord)
+                .where(GuideImportRecord.guide_id == guide.id)
+                .order_by(GuideImportRecord.id.desc())
+            )
+            .scalars()
+            .first()
+        )
         return {
             "id": guide.id,
             "title": guide.title,
@@ -285,6 +295,11 @@ class RagService:
             "content": source.raw_text or "",
             "created_at": guide.created_at.isoformat() if guide.created_at else None,
             "chunk_count": len(chunk_rows),
+            "import_audit": self._build_import_audit(
+                content=source.raw_text or "",
+                structured=structured,
+                record=latest_import_record,
+            ),
             "structured": structured,
             "chunks": [
                 {
@@ -296,6 +311,191 @@ class RagService:
             ],
             "places": places,
         }
+
+    def _build_import_audit(
+        self,
+        *,
+        content: str,
+        structured: dict,
+        record: GuideImportRecord | None,
+    ) -> dict | None:
+        """为详情页组装导入质检视图，便于前端做图片、置信度与差异对照。"""
+        if record is None:
+            return None
+
+        quality = self._loads_json(record.quality_json) or {}
+        diagnostics = self._loads_json(record.diagnostics_json) or {}
+        image_urls = self._string_list(diagnostics.get("image_urls"), limit=8)
+        source_preview_lines = self._build_source_preview_lines(content, diagnostics)
+        imported_preview_lines = self._build_imported_preview_lines(content, diagnostics)
+        diff_blocks = self._build_diff_blocks(source_preview_lines, imported_preview_lines)
+        confidence = self._build_import_confidence(
+            quality=quality,
+            diagnostics=diagnostics,
+            structured=structured,
+            diff_blocks=diff_blocks,
+        )
+        return {
+            "record_id": record.id,
+            "status": record.status,
+            "mode": record.mode,
+            "reason": record.reason,
+            "created_at": record.created_at.isoformat() if record.created_at else None,
+            "quality": quality or None,
+            "diagnostics": diagnostics or None,
+            "image_urls": image_urls,
+            "source_preview_lines": source_preview_lines,
+            "imported_preview_lines": imported_preview_lines,
+            "diff_blocks": diff_blocks,
+            "confidence": confidence,
+        }
+
+    def _build_source_preview_lines(self, content: str, diagnostics: dict) -> list[str]:
+        """优先展示抓取原文侧的片段，缺失时再退回入库正文预览。"""
+        preview_lines: list[str] = []
+        for key in ("source_preview_lines", "html_preview_lines", "ocr_preview_lines", "vision_preview_lines"):
+            preview_lines.extend(self._string_list(diagnostics.get(key), limit=8))
+        if not preview_lines:
+            preview_lines.extend(self._text_preview_lines(content, limit=6))
+        return self._dedupe_lines(preview_lines, limit=8)
+
+    def _build_imported_preview_lines(self, content: str, diagnostics: dict) -> list[str]:
+        """展示最终入库正文的核心片段，作为对照列。"""
+        preview_lines = self._string_list(diagnostics.get("final_preview_lines"), limit=8)
+        if not preview_lines:
+            preview_lines = self._text_preview_lines(content, limit=8)
+        return self._dedupe_lines(preview_lines, limit=8)
+
+    def _build_diff_blocks(self, source_lines: list[str], imported_lines: list[str]) -> list[dict]:
+        """生成轻量差异对照，避免前端再做字符串算法。"""
+        source_map = self._line_map(source_lines)
+        imported_map = self._line_map(imported_lines)
+        shared_keys = [key for key in source_map if key in imported_map]
+        source_only_keys = [key for key in source_map if key not in imported_map]
+        imported_only_keys = [key for key in imported_map if key not in source_map]
+
+        diff_blocks: list[dict] = []
+        for key in shared_keys[:4]:
+            diff_blocks.append(
+                {
+                    "type": "shared",
+                    "source": source_map[key],
+                    "imported": imported_map[key],
+                }
+            )
+        for key in source_only_keys[:4]:
+            diff_blocks.append(
+                {
+                    "type": "source_only",
+                    "source": source_map[key],
+                    "imported": None,
+                }
+            )
+        for key in imported_only_keys[:4]:
+            diff_blocks.append(
+                {
+                    "type": "import_only",
+                    "source": None,
+                    "imported": imported_map[key],
+                }
+            )
+        return diff_blocks
+
+    def _build_import_confidence(
+        self,
+        *,
+        quality: dict,
+        diagnostics: dict,
+        structured: dict,
+        diff_blocks: list[dict],
+    ) -> dict:
+        """根据导入质量、结构化完整度和片段重合度计算解释性置信度。"""
+        quality_score = int(quality.get("score") or 0)
+        extraction = quality_score
+        if diagnostics.get("ocr_used"):
+            extraction += 6
+        if diagnostics.get("vision_used"):
+            extraction += 4
+        if diagnostics.get("fetch_method") == "browser_render":
+            extraction += 3
+        if diagnostics.get("issue_code"):
+            extraction -= 8
+        if int(diagnostics.get("final_content_length") or 0) >= 500:
+            extraction += 4
+        extraction = self._clamp_score(extraction)
+
+        structure_signals = [
+            structured.get("summary"),
+            structured.get("days"),
+            structured.get("budget_range"),
+            structured.get("transport_modes"),
+            structured.get("lodging_suggestions"),
+            structured.get("scenic_spots"),
+            structured.get("route_nodes"),
+            structured.get("risk_notes"),
+        ]
+        structure = self._clamp_score(28 + sum(9 for item in structure_signals if item))
+
+        shared_count = sum(1 for item in diff_blocks if item.get("type") == "shared")
+        source_only_count = sum(1 for item in diff_blocks if item.get("type") == "source_only")
+        imported_only_count = sum(1 for item in diff_blocks if item.get("type") == "import_only")
+        source_integrity = 58 + shared_count * 10 - source_only_count * 4 - imported_only_count * 3
+        if diagnostics.get("image_count"):
+            source_integrity += 3
+        source_integrity = self._clamp_score(source_integrity)
+
+        overall = round(extraction * 0.45 + structure * 0.25 + source_integrity * 0.30, 1)
+        return {
+            "overall": overall,
+            "extraction": extraction,
+            "structure": structure,
+            "source_integrity": source_integrity,
+        }
+
+    def _text_preview_lines(self, content: str, limit: int = 6) -> list[str]:
+        lines = [line.strip() for line in (content or "").splitlines() if line.strip()]
+        return self._dedupe_lines(lines, limit=limit)
+
+    def _line_map(self, lines: list[str]) -> dict[str, str]:
+        mapped: dict[str, str] = {}
+        for line in lines:
+            compact = self._compact_text(line)
+            if compact and compact not in mapped:
+                mapped[compact] = line.strip()
+        return mapped
+
+    def _dedupe_lines(self, lines: list[str], limit: int = 8) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw_line in lines:
+            line = str(raw_line or "").strip()
+            compact = self._compact_text(line)
+            if not compact or compact in seen:
+                continue
+            seen.add(compact)
+            result.append(line[:120])
+            if len(result) >= limit:
+                break
+        return result
+
+    def _string_list(self, value: object, limit: int = 8) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()][:limit]
+
+    def _loads_json(self, value: str | None) -> dict | list | None:
+        if not value:
+            return None
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return None
+
+    def _compact_text(self, value: str | None) -> str:
+        return re.sub(r"\s+", "", value or "")
+
+    def _clamp_score(self, value: int | float) -> int:
+        return max(0, min(100, int(round(value))))
 
     def list_sources(
         self,

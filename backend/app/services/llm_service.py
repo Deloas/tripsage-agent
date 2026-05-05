@@ -8,17 +8,14 @@ from app.core.config import public_url, settings
 
 
 class LlmService:
-    """DeepSeek/OpenAI-compatible 大模型服务封装。
-
-    未配置 API Key 时返回 None，让智能体使用规则兜底，保证本地演示稳定。
-    """
+    """DeepSeek/OpenAI-compatible 大模型服务封装。"""
 
     def provider(self) -> str:
-        """返回当前大模型供应商名称。"""
+        """返回当前大模型提供商名称。"""
         return settings.llm_provider or "deepseek"
 
     def base_url(self) -> str:
-        """DeepSeek 官方兼容 OpenAI 的默认 base_url。"""
+        """返回兼容 OpenAI 的 base_url。"""
         if settings.llm_base_url:
             return public_url(settings.llm_base_url)
         if self.provider().lower() == "deepseek":
@@ -30,7 +27,7 @@ class LlmService:
         return bool(settings.llm_api_key and self.base_url() and settings.llm_model)
 
     def config_status(self) -> dict[str, Any]:
-        """返回可公开展示的大模型配置状态，不包含 API Key。"""
+        """返回可公开展示的模型配置状态。"""
         return {
             "provider": self.provider(),
             "model": settings.llm_model,
@@ -41,8 +38,8 @@ class LlmService:
             "max_tokens": settings.llm_max_tokens,
         }
 
-    async def chat(self, messages: list[dict[str, str]], temperature: float = 0.2) -> str | None:
-        """调用大模型聊天接口。"""
+    async def chat(self, messages: list[dict[str, Any]], temperature: float = 0.2) -> str | None:
+        """调用聊天补全接口。"""
         if not self.configured():
             return None
 
@@ -64,12 +61,11 @@ class LlmService:
                 data = response.json()
             return data["choices"][0]["message"]["content"]
         except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-            # 大模型异常不能拖垮课程演示主流程，智能体会自动切回规则与模板兜底。
-            logger.warning("LLM 调用失败，已切换兜底回答：{}", exc)
+            logger.warning("LLM 调用失败，已切换兜底：{}", exc)
             return None
 
     async def ping(self) -> dict[str, Any]:
-        """主动测试 DeepSeek/OpenAI-compatible 接口连通性。"""
+        """主动测试模型接口连通性。"""
         status = self.config_status()
         if not self.configured():
             return {
@@ -110,6 +106,21 @@ class LlmService:
             return json.loads(cleaned)
         except json.JSONDecodeError:
             return None
+
+    async def vision_plain_chat(self, prompt: str, image_urls: list[str]) -> str | None:
+        """尝试通过多模态接口直接读取图片中的攻略文本。"""
+        if not self.configured() or not image_urls:
+            return None
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for image_url in image_urls[:4]:
+            content.append({"type": "image_url", "image_url": {"url": image_url}})
+        return await self.chat(
+            [
+                {"role": "system", "content": "你是严谨的中文 OCR 与攻略提取助手，只输出纯文本，不要解释。"},
+                {"role": "user", "content": content},
+            ],
+            temperature=0,
+        )
 
     async def plain_chat(self, prompt: str) -> str | None:
         """生成普通文本回答。"""

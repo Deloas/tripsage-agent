@@ -11,11 +11,17 @@ const LOGIN_SHELL_MARKERS = [
 function normalizePostUrl(input) {
   try {
     const url = new URL(input);
-    const match = url.pathname.match(/^\/7896659368\/([A-Za-z0-9]+)/);
+    if (url.hostname.includes("m.weibo.cn")) {
+      const mobileMatch = url.pathname.match(/^\/(?:status|detail)\/([A-Za-z0-9]+)/);
+      if (mobileMatch) {
+        return `https://m.weibo.cn/status/${mobileMatch[1]}`;
+      }
+    }
+    const match = url.pathname.match(/^\/(\d+)\/([A-Za-z0-9]+)/);
     if (!match) {
       return null;
     }
-    return `https://weibo.com/7896659368/${match[1]}`;
+    return `https://weibo.com/${match[1]}/${match[2]}`;
   } catch {
     return null;
   }
@@ -29,7 +35,8 @@ function normalizeImageUrl(src) {
   if (!src || !src.includes("wx") || !src.includes("sinaimg.cn")) {
     return null;
   }
-  return src.replace(/\/(?:orj360|thumb150|mw690|orj480|large)\//, "/large/");
+  const absolute = src.startsWith("//") ? `https:${src}` : src;
+  return absolute.replace(/\/(?:thumb\d+|orj\d+|mw\d+|bmiddle|large)\//, "/large/");
 }
 
 function looksLikeLoginShell(text) {
@@ -70,16 +77,24 @@ async function main() {
     let finalUrl = targetUrl;
     let bodyText = "";
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 120000 });
-      await page.waitForTimeout(4000 + attempt * 2500);
+    page.setDefaultTimeout(10000);
+    page.setDefaultNavigationTimeout(22000);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 22000 }).catch(() => null);
+      await page.waitForTimeout(1800 + attempt * 1200);
+      await expandAndLoad(page);
       bodyText = await page.locator("body").innerText();
       finalUrl = page.url();
       if (!looksLikeLoginShell(bodyText)) {
         break;
       }
-      await page.reload({ waitUntil: "domcontentloaded", timeout: 120000 });
-      await page.waitForTimeout(5000 + attempt * 3000);
+      if (new URL(targetUrl).hostname.includes("m.weibo.cn")) {
+        break;
+      }
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 22000 }).catch(() => null);
+      await page.waitForTimeout(2400 + attempt * 1400);
+      await expandAndLoad(page);
       bodyText = await page.locator("body").innerText();
       finalUrl = page.url();
       if (!looksLikeLoginShell(bodyText)) {
@@ -87,6 +102,7 @@ async function main() {
       }
     }
 
+    await expandAndLoad(page);
     const pageTitle = await page.title();
 
     const childLinks = await page.evaluate((currentUrl) => {
@@ -98,12 +114,12 @@ async function main() {
       for (const anchor of Array.from(document.querySelectorAll("a"))) {
         const href = anchor.href || "";
         const text = (anchor.innerText || "").trim();
-        if (!href.includes("weibo.com/7896659368/")) {
+        if (!href.includes("weibo.com/")) {
           continue;
         }
         try {
           const url = new URL(href);
-          if (!/^\/7896659368\/[A-Za-z0-9]+/.test(url.pathname)) {
+          if (!/^\/\d+\/[A-Za-z0-9]+/.test(url.pathname)) {
             continue;
           }
           if (url.pathname === currentPath) {
@@ -126,28 +142,123 @@ async function main() {
       return results;
     }, finalUrl);
 
+    const extractedPost = await page.evaluate(() => {
+      const clean = (value) =>
+        String(value || "")
+          .replace(/\u00a0/g, " ")
+          .replace(/[ \t]+/g, " ")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+      const scoreText = (text) => {
+        const chineseCount = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+        const travelHits = (text.match(/攻略|路线|景点|交通|住宿|美食|预算|门票|行程|游玩|旅行|旅游/g) || []).length;
+        const noiseHits = (text.match(/登录|注册|热门|热搜|评论|转发|点赞|关注/g) || []).length;
+        return chineseCount + travelHits * 40 - noiseHits * 18;
+      };
+      const selectors = [
+        ".wbpro-feed-ogText",
+        ".wbpro-feed-content",
+        ".detail_wbtext",
+        "[class*='detail_wbtext']",
+        "[class*='feed-content']",
+        "[class*='ogText']",
+        "[class*='Feed_body']",
+        "[class*='weibo-text']",
+        "article",
+      ];
+      let bestText = "";
+      let bestNode = null;
+      for (const selector of selectors) {
+        for (const node of Array.from(document.querySelectorAll(selector))) {
+          const text = clean(node.innerText || node.textContent || "");
+          if (text.length < 20) continue;
+          if (!bestText || scoreText(text) > scoreText(bestText)) {
+            bestText = text;
+            bestNode = node;
+          }
+        }
+      }
+      if (!bestText) {
+        bestText = clean(document.body ? document.body.innerText || "" : "");
+      }
+      const lines = bestText.split(/\n+/).map((item) => item.trim()).filter(Boolean);
+      let title = lines.find((line) => /(攻略|路线|游玩|旅行|旅游|一日|两日|三日)/.test(line) && line.length <= 70) || "";
+      let author = "";
+      const article = bestNode ? bestNode.closest("article") || bestNode.parentElement : null;
+      const articleLines = clean(article ? article.innerText || article.textContent || "" : "")
+        .split(/\n+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const publicIndex = articleLines.findIndex((line) => line === "公开");
+      if (publicIndex >= 0 && articleLines[publicIndex + 1]) {
+        author = articleLines[publicIndex + 1];
+      }
+      if (!author) {
+        author =
+          articleLines.find(
+            (line) => /^[\u4e00-\u9fffA-Za-z0-9_\-]{2,24}$/.test(line) && !/关注|返回|公开|微博/.test(line),
+          ) || "";
+      }
+      return { title, author, text: bestText };
+    });
+
     const imageUrls = await page.evaluate(() => {
       const seen = new Set();
       const results = [];
+      const normalize = (value) => {
+        if (!value) return "";
+        let url = String(value).trim().replace(/\\\//g, "/");
+        if (!url || url.startsWith("data:")) return "";
+        if (url.startsWith("//")) url = `https:${url}`;
+        try {
+          url = new URL(url, location.href).href;
+        } catch {
+          return "";
+        }
+        return url;
+      };
+      const remember = (value) => {
+        const url = normalize(value);
+        if (!url || !url.includes("sinaimg.cn") || !url.includes("wx")) return;
+        if (seen.has(url)) return;
+        seen.add(url);
+        results.push(url);
+      };
 
       for (const image of Array.from(document.querySelectorAll("img"))) {
-        const src = image.currentSrc || image.src || "";
-        const width = image.naturalWidth || 0;
-        const height = image.naturalHeight || 0;
-        if (!src.includes("sinaimg.cn")) {
-          continue;
+        const candidates = [
+          image.currentSrc,
+          image.src,
+          image.getAttribute("data-src"),
+          image.getAttribute("data-original"),
+          image.getAttribute("data-large"),
+          image.getAttribute("data-lazy-src"),
+          image.getAttribute("data-orig"),
+        ].filter(Boolean);
+        const width = image.naturalWidth || image.width || 0;
+        const height = image.naturalHeight || image.height || 0;
+        for (const src of candidates) {
+          if (!src.includes("sinaimg.cn")) {
+            continue;
+          }
+          if (!src.includes("wx")) {
+            continue;
+          }
+          const useful =
+            width >= 240 ||
+            height >= 240 ||
+            src.includes("/large/") ||
+            src.includes("/orj") ||
+            src.includes("/mw");
+          if (!useful) {
+            continue;
+          }
+          remember(src);
         }
-        if (width < 500 && height < 500) {
-          continue;
-        }
-        if (!src.includes("wx")) {
-          continue;
-        }
-        if (seen.has(src)) {
-          continue;
-        }
-        seen.add(src);
-        results.push(src);
+      }
+      const html = document.documentElement ? document.documentElement.innerHTML || "" : "";
+      for (const match of html.matchAll(/(?:https?:)?\/\/wx\d+\.sinaimg\.cn\/(?:large|mw\d+|orj\d+|thumb\d+|bmiddle)\/[^"')\\\s<>]+/g)) {
+        remember(match[0]);
       }
 
       return results;
@@ -164,7 +275,9 @@ async function main() {
         {
           finalUrl: normalizePostUrl(finalUrl) || finalUrl,
           pageTitle,
-          bodyText,
+          bodyText: extractedPost.text || bodyText,
+          postTitle: extractedPost.title || "",
+          author: extractedPost.author || "",
           childLinks: Array.from(new Set(normalizedChildren)),
           imageUrls: Array.from(new Set(normalizedImages)),
         },
@@ -175,6 +288,28 @@ async function main() {
   } finally {
     await browser.close();
   }
+}
+
+async function expandAndLoad(page) {
+  await page.evaluate(() => {
+    for (const node of Array.from(document.querySelectorAll("button, a, span, div"))) {
+      const text = String(node.innerText || node.textContent || "").trim();
+      if (/^(展开|展开全文|全文|更多)$/.test(text) || text.includes("展开全文")) {
+        try {
+          node.click();
+        } catch {
+          // ignore click errors
+        }
+      }
+    }
+  }).catch(() => null);
+  await page.waitForTimeout(300);
+  for (let index = 0; index < 2; index += 1) {
+    await page.mouse.wheel(0, 900).catch(() => null);
+    await page.waitForTimeout(260);
+  }
+  await page.evaluate(() => window.scrollTo(0, 0)).catch(() => null);
+  await page.waitForTimeout(180);
 }
 
 main().catch((error) => {

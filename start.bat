@@ -1,10 +1,11 @@
 @echo off
 setlocal
 
-REM TripSage Agent 一键启动脚本。
-REM 负责准备依赖、初始化数据，并启动后端与前端。
+REM TripSage Agent one-click startup script.
+REM Prepare dependencies, initialize data, then start backend and frontend.
 
 cd /d "%~dp0"
+set "ROOT_DIR=%cd%"
 
 if not exist "backend\.env" (
   copy "backend\.env.example" "backend\.env" >nul
@@ -49,11 +50,22 @@ if not exist "node_modules" (
 )
 popd
 
-echo Starting backend at http://127.0.0.1:8000
-start "TripSage Backend" cmd /k "cd /d %cd%\backend && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload"
+call :is_port_listening 8000
+if errorlevel 1 (
+  echo Starting backend at http://127.0.0.1:8000
+  REM 中文注释：产品演示使用稳定模式启动，避免 --reload 监听 .venv 变化导致后端重启、前端误判全离线。
+  start "TripSage Backend" cmd /k "cd /d %ROOT_DIR%\backend && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+) else (
+  echo Backend already running at http://127.0.0.1:8000
+)
 
-echo Starting frontend at http://127.0.0.1:5173
-start "TripSage Frontend" cmd /k "cd /d %cd%\frontend && npm run dev"
+call :is_port_listening 5173
+if errorlevel 1 (
+  echo Starting frontend at http://127.0.0.1:5173
+  start "TripSage Frontend" cmd /k "cd /d %ROOT_DIR%\frontend && npm run dev"
+) else (
+  echo Frontend already running at http://127.0.0.1:5173
+)
 
 timeout /t 3 >nul
 start http://127.0.0.1:5173
@@ -61,6 +73,10 @@ start http://127.0.0.1:5173
 echo TripSage Agent started.
 endlocal
 exit /b 0
+
+:is_port_listening
+powershell -NoProfile -Command "if (Get-NetTCPConnection -State Listen -LocalPort %1 -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" >nul 2>&1
+exit /b %errorlevel%
 
 :error_popd
 popd

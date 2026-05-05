@@ -26,12 +26,14 @@ import {
   Star,
   TrainFront,
   WandSparkles,
+  X,
 } from "lucide-react";
 import { FormEvent, KeyboardEvent, forwardRef, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   ChatResponse,
   DecisionModule,
+  GuideDetail,
   ItineraryBlock,
   PlanVersion,
   PlanVersionCompare,
@@ -57,10 +59,14 @@ interface ChatWorkspaceProps {
   profileHighlights: string[];
   profileDigest: string;
   decisionModuleStates: Record<string, "accepted" | "ignored">;
+  referencedGuide: GuideDetail | null;
   onOpenPlanner: () => void;
   onOpenEvidence: () => void;
+  onOpenEvidenceWorkspace: () => void;
   onOpenRailway: () => void;
   onOpenUserCenter: () => void;
+  onClearReferencedGuide: () => void;
+  onOpenReferencedGuide: (detailMode?: "preview" | "edit") => void;
   onSubmit: (message: string) => void;
   onOptimizeItinerary: (editedPlan: Record<string, unknown>) => void;
   onDecisionModuleAction: (module: DecisionModule, action: "accept" | "ignore" | "regenerate") => void;
@@ -196,10 +202,14 @@ export function ChatWorkspace({
   profileHighlights,
   profileDigest,
   decisionModuleStates,
+  referencedGuide,
   onOpenPlanner,
   onOpenEvidence,
+  onOpenEvidenceWorkspace,
   onOpenRailway,
   onOpenUserCenter,
+  onClearReferencedGuide,
+  onOpenReferencedGuide,
   onSubmit,
   onOptimizeItinerary,
   onDecisionModuleAction,
@@ -379,6 +389,16 @@ export function ChatWorkspace({
           </div>
         </div>
       </section>
+
+      {referencedGuide ? (
+        <GuideReferenceStrip
+          guide={referencedGuide}
+          onClear={onClearReferencedGuide}
+          onBrowseGuides={onOpenEvidenceWorkspace}
+          onOpenDetail={() => onOpenReferencedGuide("preview")}
+          onOpenEditor={() => onOpenReferencedGuide("edit")}
+        />
+      ) : null}
 
       <section className="planner-workstation-grid">
         <section
@@ -670,6 +690,75 @@ function PlannerStatusChip({
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+function GuideReferenceStrip({
+  guide,
+  onClear,
+  onBrowseGuides,
+  onOpenDetail,
+  onOpenEditor,
+}: {
+  guide: GuideDetail;
+  onClear: () => void;
+  onBrowseGuides: () => void;
+  onOpenDetail: () => void;
+  onOpenEditor: () => void;
+}) {
+  const structured = guide.structured;
+  const budget = structured?.budget_range
+    || (guide.budget_min != null && guide.budget_max != null
+      ? `${guide.budget_min}-${guide.budget_max}元`
+      : guide.budget_min != null
+        ? `约${guide.budget_min}元`
+        : null);
+  const scenic = structured?.scenic_spots?.slice(0, 3) || [];
+  const transport = structured?.transport_modes?.slice(0, 2) || [];
+
+  return (
+    <section className="planner-guide-reference-strip" aria-label="当前参考攻略">
+      <div className="planner-guide-reference-copy">
+        <div className="planner-guide-reference-kicker">
+          <DatabaseZap size={15} />
+          当前参考攻略
+        </div>
+        <strong>{guide.title}</strong>
+        <p>{structured?.summary || guide.summary || "当前对话会持续参考这篇攻略的结构化信息与正文线索。"}</p>
+        <div className="planner-guide-reference-chips">
+          <span>{guide.city || "未知城市"}</span>
+          {guide.days ? <span>{guide.days} 天</span> : null}
+          {budget ? <span>{budget}</span> : null}
+          {transport.map((item) => <span key={item}>{item}</span>)}
+          {scenic.map((item) => <span key={item}>{item}</span>)}
+        </div>
+      </div>
+
+      <div className="planner-guide-reference-actions">
+        <button type="button" className="secondary-action" onClick={onBrowseGuides}>
+          <PanelRightOpen size={14} />
+          更换攻略
+        </button>
+        <button type="button" className="secondary-action" onClick={onOpenDetail}>
+          <Link2 size={14} />
+          查看详情
+        </button>
+        <button type="button" className="secondary-action" onClick={onOpenEditor}>
+          <PencilLine size={14} />
+          编辑攻略
+        </button>
+        {guide.source_url ? (
+          <a className="planner-guide-reference-link" href={guide.source_url} target="_blank" rel="noreferrer">
+            <Link2 size={14} />
+            查看来源
+          </a>
+        ) : null}
+        <button type="button" className="planner-guide-reference-clear" onClick={onClear} aria-label="取消当前参考攻略">
+          <X size={14} />
+          取消引用
+        </button>
+      </div>
+    </section>
   );
 }
 

@@ -449,23 +449,8 @@ export interface GuideDetail {
   content: string;
   created_at?: string | null;
   chunk_count: number;
-  structured?: {
-    city?: string;
-    days?: number | null;
-    summary?: string;
-    budget_min?: number | null;
-    budget_max?: number | null;
-    budget_range?: string | null;
-    transport_modes?: string[];
-    lodging_suggestions?: string[];
-    travel_style_tags?: string[];
-    scenic_spots?: string[];
-    food_spots?: string[];
-    places?: Array<{
-      name: string;
-      type?: string | null;
-    }>;
-  } | null;
+  import_audit?: GuideImportAudit | null;
+  structured?: GuideStructuredDraft | null;
   chunks: Array<{
     id: string;
     chunk_index: number;
@@ -479,6 +464,27 @@ export interface GuideDetail {
   }>;
 }
 
+export interface GuideUpdatePayload {
+  title: string;
+  content: string;
+  category?: string | null;
+  author?: string | null;
+  source_url?: string | null;
+  structured?: GuideStructuredDraft | null;
+}
+
+export interface GuideUpdateResult {
+  result: {
+    guide_id: number;
+    city: string;
+    chunks: number;
+    indexed: boolean;
+    old_vectors_deleted?: boolean;
+    extracted: GuideStructuredDraft;
+  };
+  guide: GuideDetail;
+}
+
 export interface GuideSourceItem {
   id: number;
   title: string;
@@ -487,6 +493,171 @@ export interface GuideSourceItem {
   raw_url?: string;
   category?: string;
   crawl_status: "indexed" | "pending" | "blocked" | "failed" | string;
+}
+
+export interface GuideLinkImportResult {
+  status: "indexed" | "duplicate" | "pending" | string;
+  reason?: string;
+  guide_id?: number;
+  source_id?: number;
+  title?: string;
+  city?: string;
+  chunks?: number;
+  indexed?: boolean;
+  source_type?: string;
+  resolved_url?: string;
+  llm_enhanced?: boolean;
+  message?: string;
+  quality?: {
+    score: number;
+    grade: string;
+    city_confidence?: string;
+    paragraph_count?: number;
+    travel_signal_count?: number;
+    content_length?: number;
+    resolved_url?: string;
+  } | null;
+  diagnostics?: {
+    fetch_method?: string;
+    issue_code?: string | null;
+    attempt_count?: number;
+    quality_grade?: string;
+    image_count?: number;
+    image_urls?: string[];
+    html_text_length?: number;
+    html_preview_lines?: string[];
+    source_preview_lines?: string[];
+    final_preview_lines?: string[];
+    final_content_length?: number;
+      content_sources?: string[];
+      ocr_used?: boolean;
+      ocr_text_length?: number;
+      ocr_preview_lines?: string[];
+      ocr_image_total?: number;
+      ocr_target_count?: number;
+      ocr_processed_count?: number;
+      ocr_success_count?: number;
+      ocr_cached_count?: number;
+      ocr_coverage_ratio?: number;
+      ocr_elapsed_seconds?: number;
+      ocr_image_results?: Array<{
+        index?: number;
+        url?: string;
+        cached?: boolean;
+        text_length?: number;
+        score?: number;
+      }>;
+      vision_used?: boolean;
+    vision_text_length?: number;
+    vision_preview_lines?: string[];
+    attempts?: Array<{
+      method?: string;
+      requested_url?: string;
+      resolved_url?: string;
+      status_code?: number;
+      content_type?: string;
+      issue_code?: string | null;
+      error?: string;
+    }>;
+  } | null;
+  guide?: GuideDetail | null;
+  record?: GuideImportRecordItem | null;
+}
+
+export interface GuideLinkPreviewResult {
+  status: "preview_ready" | "pending" | string;
+  reason?: string | null;
+  title: string;
+  content: string;
+  category?: string | null;
+  source_type?: string;
+  resolved_url?: string;
+  author?: string | null;
+  message?: string;
+  structured?: GuideStructuredDraft | null;
+  quality?: GuideLinkImportResult["quality"];
+  diagnostics?: GuideLinkImportResult["diagnostics"];
+  record?: GuideImportRecordItem | null;
+}
+
+export interface GuideImportTaskItem {
+  id: string;
+  url: string;
+  category?: string | null;
+  force_reimport: boolean;
+  mode: "preview" | "import" | string;
+  status: "queued" | "running" | "succeeded" | "failed" | string;
+  stage: string;
+  progress: number;
+  title?: string | null;
+  message?: string | null;
+  result?: GuideLinkPreviewResult | null;
+  error_message?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface GuideStructuredDraft {
+  city?: string | null;
+  days?: number | null;
+  budget_min?: number | null;
+  budget_max?: number | null;
+  budget_range?: string | null;
+  summary?: string | null;
+  transport_modes?: string[];
+  lodging_suggestions?: string[];
+  travel_style_tags?: string[];
+  scenic_spots?: string[];
+  food_spots?: string[];
+  route_nodes?: string[];
+  ticket_hints?: string[];
+  budget_tips?: string[];
+  risk_notes?: string[];
+  places?: Array<{
+    name: string;
+    type?: string | null;
+  }>;
+}
+
+export interface GuideImportRecordItem {
+  id: number;
+  url: string;
+  status: string;
+  mode: string;
+  title?: string | null;
+  source_type?: string | null;
+  guide_id?: number | null;
+  source_id?: number | null;
+  reason?: string | null;
+  message?: string | null;
+  quality?: GuideLinkImportResult["quality"];
+  diagnostics?: GuideLinkImportResult["diagnostics"];
+  created_at?: string | null;
+}
+
+export interface GuideImportAudit {
+  record_id: number;
+  status: string;
+  mode: string;
+  reason?: string | null;
+  created_at?: string | null;
+  quality?: GuideLinkImportResult["quality"];
+  diagnostics?: GuideLinkImportResult["diagnostics"];
+  image_urls: string[];
+  source_preview_lines: string[];
+  imported_preview_lines: string[];
+  diff_blocks: Array<{
+    type: "shared" | "source_only" | "import_only" | string;
+    source?: string | null;
+    imported?: string | null;
+  }>;
+  confidence: {
+    overall: number;
+    extraction: number;
+    structure: number;
+    source_integrity: number;
+  };
 }
 
 export interface ToolStatus {

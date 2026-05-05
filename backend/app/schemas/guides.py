@@ -14,6 +14,40 @@ class GuideCreateRequest(BaseModel):
     raw_url: str | None = None
     resolved_url: str | None = None
     crawl_status: str = "indexed"
+    author: str | None = None
+
+
+class GuideLinkImportRequest(BaseModel):
+    """通用攻略链接导入请求。"""
+
+    url: str = Field(min_length=8, max_length=1000)
+    category: str | None = Field(default=None, max_length=120)
+    force_reimport: bool = False
+
+
+class GuideLinkImportConfirmRequest(BaseModel):
+    """确认入库一条已抓取或用户修订后的链接攻略。"""
+
+    url: str = Field(min_length=8, max_length=1000)
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=20, max_length=50000)
+    category: str | None = Field(default=None, max_length=120)
+    source_type: str = Field(default="link_confirmed", max_length=60)
+    resolved_url: str | None = Field(default=None, max_length=1000)
+    author: str | None = Field(default=None, max_length=120)
+    structured: dict | None = None
+    force_reimport: bool = False
+
+
+class GuideUpdateRequest(BaseModel):
+    """更新已入库攻略请求。"""
+
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=20, max_length=50000)
+    category: str | None = Field(default=None, max_length=120)
+    author: str | None = Field(default=None, max_length=120)
+    source_url: str | None = Field(default=None, max_length=1000)
+    structured: dict | None = None
 
 
 class GuideItem(BaseModel):
@@ -69,3 +103,21 @@ class GuideSearchItem(BaseModel):
     content: str
     score: float
     source: SourceRef
+
+
+class GuideImportRecordItem(BaseModel):
+    """攻略导入历史记录项。"""
+
+    id: int
+    url: str
+    status: str
+    mode: str
+    title: str | None = None
+    source_type: str | None = None
+    guide_id: int | None = None
+    source_id: int | None = None
+    reason: str | None = None
+    message: str | None = None
+    quality: dict | None = None
+    diagnostics: dict | None = None
+    created_at: str | None = None

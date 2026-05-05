@@ -1,4 +1,4 @@
-import {
+﻿import {
   ArrowUpRight,
   ChevronLeft,
   ChevronRight,
@@ -25,6 +25,18 @@ interface KnowledgeBaseWorkbenchProps {
   onAddGuide: () => void;
   onCrawlWeibo: () => void;
   onUseGuide: (guide: GuideDetail) => void;
+  onPlanFromGuide?: (guide: GuideDetail) => void;
+  onOptimizeGuide?: (guide: GuideDetail) => void;
+  onSetPrimaryGuide?: (guide: GuideDetail) => void;
+  onOpenImportRecord?: (recordId: number) => void;
+  onGuideQuickAsk?: (guide: GuideDetail, prompt: string) => void;
+  onOpenPlanningWorkspace?: () => void;
+  activeReferencedGuide?: GuideDetail | null;
+  preselectedGuideRequest?: {
+    guideId: number;
+    detailMode: "preview" | "edit";
+    nonce: number;
+  } | null;
 }
 
 const PAGE_SIZE = 12;
@@ -48,6 +60,12 @@ export function KnowledgeBaseWorkbench({
   onAddGuide,
   onCrawlWeibo,
   onUseGuide,
+  onPlanFromGuide,
+  onOptimizeGuide,
+  onSetPrimaryGuide,
+  onOpenImportRecord,
+  activeReferencedGuide,
+  preselectedGuideRequest,
 }: KnowledgeBaseWorkbenchProps) {
   const [library, setLibrary] = useState<GuideLibraryResult>(emptyLibraryResult);
   const [loading, setLoading] = useState(false);
@@ -62,6 +80,7 @@ export function KnowledgeBaseWorkbench({
   const [selectedGuideId, setSelectedGuideId] = useState<number | null>(null);
   const [selectedGuide, setSelectedGuide] = useState<GuideDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [previewImage, setPreviewImage] = useState<{ url: string; label: string } | null>(null);
 
   const indexedCount = guideSources.filter((item) => item.crawl_status === "indexed").length;
   const failedCount = guideSources.filter((item) => item.crawl_status === "failed" || item.crawl_status === "blocked").length;
@@ -136,6 +155,11 @@ export function KnowledgeBaseWorkbench({
     };
   }, [selectedGuideId]);
 
+  useEffect(() => {
+    if (!preselectedGuideRequest) return;
+    setSelectedGuideId(preselectedGuideRequest.guideId);
+  }, [preselectedGuideRequest]);
+
   function applyKeyword(event: FormEvent) {
     event.preventDefault();
     setPage(1);
@@ -169,6 +193,7 @@ export function KnowledgeBaseWorkbench({
   }, [category, city, keyword, sourceType]);
 
   const structured = selectedGuide?.structured;
+  const importAudit = selectedGuide?.import_audit;
 
   return (
     <section className="page-band knowledge-library-band" aria-label="攻略库工作台">
@@ -409,6 +434,17 @@ export function KnowledgeBaseWorkbench({
                     加入当前规划
                   </button>
                 ) : null}
+                {selectedGuide && onSetPrimaryGuide ? (
+                  <button
+                    type="button"
+                    className="secondary-action"
+                    onClick={() => onSetPrimaryGuide(selectedGuide)}
+                    disabled={activeReferencedGuide?.id === selectedGuide.id}
+                  >
+                    <DatabaseZap size={15} />
+                    {activeReferencedGuide?.id === selectedGuide.id ? "当前主参考攻略" : "设为主参考攻略"}
+                  </button>
+                ) : null}
                 <button type="button" className="icon-button" onClick={() => setSelectedGuideId(null)} aria-label="关闭详情">
                   <X size={16} />
                 </button>
@@ -447,6 +483,24 @@ export function KnowledgeBaseWorkbench({
                     <StructuredList title="核心景点" items={structured?.scenic_spots || []} />
                     <StructuredList title="美食线索" items={structured?.food_spots || []} />
                   </div>
+                </section>
+
+                <section className="knowledge-detail-section knowledge-import-audit-section">
+                  <div className="knowledge-detail-section-head">
+                    <strong>导入质检</strong>
+                    <span>{importAudit ? "图片提取、原文片段与入库结果对照" : "暂无导入质检记录"}</span>
+                  </div>
+                  <GuideImportAuditPanel
+                    guide={selectedGuide}
+                    audit={importAudit}
+                    onUseGuide={onUseGuide}
+                    onPlanFromGuide={onPlanFromGuide}
+                    onOptimizeGuide={onOptimizeGuide}
+                    onSetPrimaryGuide={onSetPrimaryGuide}
+                    activeReferencedGuideId={activeReferencedGuide?.id || null}
+                    onOpenImportRecord={onOpenImportRecord}
+                    onPreviewImage={(url, label) => setPreviewImage({ url, label })}
+                  />
                 </section>
 
                 <section className="knowledge-detail-section">
@@ -497,6 +551,10 @@ export function KnowledgeBaseWorkbench({
             ) : null}
           </aside>
         </div>
+      ) : null}
+
+      {previewImage ? (
+        <ImageLightbox image={previewImage} onClose={() => setPreviewImage(null)} />
       ) : null}
     </section>
   );
@@ -562,8 +620,204 @@ function StructuredList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
+function GuideImportAuditPanel({
+  guide,
+  audit,
+  onUseGuide,
+  onPlanFromGuide,
+  onOptimizeGuide,
+  onSetPrimaryGuide,
+  activeReferencedGuideId,
+  onOpenImportRecord,
+  onPreviewImage,
+}: {
+  guide: GuideDetail;
+  audit?: GuideDetail["import_audit"] | null;
+  onUseGuide: (guide: GuideDetail) => void;
+  onPlanFromGuide?: (guide: GuideDetail) => void;
+  onOptimizeGuide?: (guide: GuideDetail) => void;
+  onSetPrimaryGuide?: (guide: GuideDetail) => void;
+  activeReferencedGuideId?: number | null;
+  onOpenImportRecord?: (recordId: number) => void;
+  onPreviewImage?: (url: string, label: string) => void;
+}) {
+  if (!audit) {
+    return <div className="knowledge-facet-empty">当前攻略暂无导入质检数据</div>;
+  }
+
+  const confidenceCards = [
+    { label: "总体可信度", value: audit.confidence.overall },
+    { label: "抓取还原", value: audit.confidence.extraction },
+    { label: "结构完整度", value: audit.confidence.structure },
+    { label: "原文一致性", value: audit.confidence.source_integrity },
+  ];
+
+  return (
+    <div className="knowledge-import-audit-shell">
+      <div className="knowledge-import-audit-topline">
+        <article className="knowledge-import-summary-card spotlight">
+          <span>导入状态 / 模式</span>
+          <strong>{`${audit.status} / ${audit.mode}`}</strong>
+          <p>{audit.reason || audit.quality?.grade || "最近一次入库质检已经同步到详情页。"}</p>
+        </article>
+        <article className="knowledge-import-summary-card">
+          <span>图片补充</span>
+          <strong>{String(audit.image_urls.length)}</strong>
+          <p>{audit.diagnostics?.content_sources?.join(" / ") || "html"}</p>
+        </article>
+        <article className="knowledge-import-summary-card">
+          <span>最近质检</span>
+          <strong>{formatAuditDate(audit.created_at)}</strong>
+          <p>{audit.diagnostics?.fetch_method || "manual"}</p>
+        </article>
+      </div>
+
+      <div className="knowledge-import-confidence-grid">
+        {confidenceCards.map((item) => (
+          <article className="knowledge-import-confidence-card" key={item.label}>
+            <span>{item.label}</span>
+            <strong>{Math.round(item.value)}</strong>
+            <div className="knowledge-import-confidence-bar">
+              <i style={{ width: `${Math.max(8, Math.min(100, item.value))}%` }} />
+            </div>
+          </article>
+        ))}
+      </div>
+
+      <div className="knowledge-import-action-row">
+        <button type="button" className="primary-action" onClick={() => onUseGuide(guide)}>
+          <Sparkles size={15} />
+          应用该攻略继续对话
+        </button>
+        {onOptimizeGuide ? (
+          <button type="button" className="secondary-action" onClick={() => onOptimizeGuide(guide)}>
+            <RefreshCw size={15} />
+            基于该攻略二次优化
+          </button>
+        ) : onPlanFromGuide ? (
+          <button type="button" className="secondary-action" onClick={() => onPlanFromGuide(guide)}>
+            <RefreshCw size={15} />
+            基于该攻略生成方案
+          </button>
+        ) : null}
+        {onOpenImportRecord ? (
+          <button type="button" className="secondary-action" onClick={() => onOpenImportRecord(audit.record_id)}>
+            <PanelRightOpen size={15} />
+            回看本次导入记录
+          </button>
+        ) : null}
+        {onSetPrimaryGuide ? (
+          <button
+            type="button"
+            className="secondary-action"
+            onClick={() => onSetPrimaryGuide(guide)}
+            disabled={activeReferencedGuideId === guide.id}
+          >
+            <DatabaseZap size={15} />
+            {activeReferencedGuideId === guide.id ? "当前主参考攻略" : "设为主参考攻略"}
+          </button>
+        ) : null}
+      </div>
+
+      {audit.image_urls.length ? (
+        <div className="knowledge-import-media-strip">
+          {audit.image_urls.map((url, index) => (
+            <button
+              type="button"
+              key={`${url}-${index}`}
+              className="knowledge-import-thumb-card"
+              onClick={() => onPreviewImage?.(url, `攻略导入原图 ${index + 1}`)}
+            >
+              <img src={url} alt={`攻略导入原图 ${index + 1}`} loading="lazy" />
+              <span>{`原图 ${index + 1}`}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="knowledge-import-preview-grid">
+        <article className="knowledge-import-preview-card">
+          <div className="knowledge-import-preview-head">
+            <strong>原文片段</strong>
+            <span>{audit.source_preview_lines.length} 条</span>
+          </div>
+          <div className="knowledge-import-preview-list">
+            {audit.source_preview_lines.length ? audit.source_preview_lines.map((line, index) => (
+              <p key={`source-${index}-${line.slice(0, 12)}`}>{line}</p>
+            )) : <div className="knowledge-facet-empty">未抓取到原文片段</div>}
+          </div>
+        </article>
+        <article className="knowledge-import-preview-card imported">
+          <div className="knowledge-import-preview-head">
+            <strong>入库正文</strong>
+            <span>{audit.imported_preview_lines.length} 条</span>
+          </div>
+          <div className="knowledge-import-preview-list">
+            {audit.imported_preview_lines.length ? audit.imported_preview_lines.map((line, index) => (
+              <p key={`imported-${index}-${line.slice(0, 12)}`}>{line}</p>
+            )) : <div className="knowledge-facet-empty">未生成入库正文片段</div>}
+          </div>
+        </article>
+      </div>
+
+      <div className="knowledge-import-diff-board">
+        {audit.diff_blocks.length ? audit.diff_blocks.map((block, index) => (
+          <article className={`knowledge-import-diff-row ${block.type}`} key={`${block.type}-${index}`}>
+            <span className="knowledge-import-diff-badge">{formatDiffType(block.type)}</span>
+            <div className="knowledge-import-diff-cell">
+              <strong>原文</strong>
+              <p>{block.source || "--"}</p>
+            </div>
+            <div className="knowledge-import-diff-cell imported">
+              <strong>入库</strong>
+              <p>{block.imported || "--"}</p>
+            </div>
+          </article>
+        )) : <div className="knowledge-facet-empty">当前没有可展示的原文 / 入库差异</div>}
+      </div>
+    </div>
+  );
+}
+
+function ImageLightbox({
+  image,
+  onClose,
+}: {
+  image: { url: string; label: string };
+  onClose: () => void;
+}) {
+  return (
+    <div className="knowledge-image-lightbox" role="dialog" aria-modal="true" aria-label={image.label}>
+      <button type="button" className="knowledge-image-lightbox-backdrop" onClick={onClose} aria-label="关闭图片预览" />
+      <div className="knowledge-image-lightbox-panel">
+        <div className="knowledge-image-lightbox-head">
+          <strong>{image.label}</strong>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭图片预览">
+            <X size={16} />
+          </button>
+        </div>
+        <img src={image.url} alt={image.label} />
+      </div>
+    </div>
+  );
+}
+
 function joinDisplay(items?: string[] | null) {
   return items?.filter(Boolean).join(" · ") || "";
+}
+
+function formatDiffType(type: string) {
+  if (type === "shared") return "已核对";
+  if (type === "source_only") return "原文独有";
+  if (type === "import_only") return "入库新增";
+  return "差异";
+}
+
+function formatAuditDate(value?: string | null) {
+  if (!value) return "暂无";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function formatBudgetRange(min?: number | null, max?: number | null) {

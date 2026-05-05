@@ -67,6 +67,9 @@ def _ensure_sqlite_compatible_columns() -> None:
             "budget": "INTEGER",
             "start_date": "TEXT",
         },
+        "guide_import_records": {
+            "mode": "TEXT DEFAULT 'link'",
+        },
     }
 
     with engine.begin() as connection:

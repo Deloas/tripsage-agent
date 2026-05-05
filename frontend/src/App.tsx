@@ -23,19 +23,25 @@ import {
   ApiCodeError,
   clearAuthSession,
   comparePlanVersions,
+  createGuideImportTask,
   createSharedPlan,
   crawlWeiboGuides,
+  confirmGuideLink,
   deleteConversation,
   exportPlanVersion,
   fetchAuthSessions,
   fetchConversationDetail,
   fetchConversations,
   fetchCurrentUser,
+  fetchGuideImportRecords,
+  fetchGuideImportTask,
+  fetchGuideImportTasks,
   fetchGuideSources,
   fetchPlanVersions,
   fetchPreferenceProfile,
   fetchToolStatus,
   importGuestSession,
+  importGuideLink,
   loginUser,
   logoutUser,
   registerUser,
@@ -57,8 +63,12 @@ import type {
   DecisionModule,
   GuestCarryoverSummary,
   GuestSessionImportPayload,
+  GuideImportRecordItem,
+  GuideImportTaskItem,
   GuideSourceItem,
   GuideDetail,
+  GuideLinkImportResult,
+  GuideLinkPreviewResult,
   LocalUser,
   PlanVersion,
   PlanVersionCompare,
@@ -98,6 +108,11 @@ type RailwayWorkspaceDraft = {
   candidate_trains: RailwayTrain[];
   generated_at: string;
   summary: string;
+};
+type GuideSelectionRequest = {
+  guideId: number;
+  detailMode: "preview" | "edit";
+  nonce: number;
 };
 
 const DEFAULT_READY_MESSAGE = "我已经准备好帮你把攻略、铁路、天气和地图放在一起做旅行判断。";
@@ -162,6 +177,12 @@ export default function App() {
   const [guideLoading, setGuideLoading] = useState(false);
   const [crawlLoading, setCrawlLoading] = useState(false);
   const [guideResult, setGuideResult] = useState<string | null>(null);
+  const [lastGuideImport, setLastGuideImport] = useState<GuideLinkImportResult | null>(null);
+  const [lastImportedGuide, setLastImportedGuide] = useState<GuideDetail | null>(null);
+  const [guidePreview, setGuidePreview] = useState<GuideLinkPreviewResult | null>(null);
+  const [guideImportRecords, setGuideImportRecords] = useState<GuideImportRecordItem[]>([]);
+  const [guideImportTasks, setGuideImportTasks] = useState<GuideImportTaskItem[]>([]);
+  const [activeGuideImportTask, setActiveGuideImportTask] = useState<GuideImportTaskItem | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -178,6 +199,9 @@ export default function App() {
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(getInitialWorkspaceView);
   const [railwayWorkspaceDraft, setRailwayWorkspaceDraft] = useState<RailwayWorkspaceDraft | null>(null);
   const [decisionModuleStates, setDecisionModuleStates] = useState<Record<string, DecisionModuleState>>({});
+  const [referencedGuide, setReferencedGuide] = useState<GuideDetail | null>(null);
+  const [guideSelectionRequest, setGuideSelectionRequest] = useState<GuideSelectionRequest | null>(null);
+  const [guideImportRecordSelection, setGuideImportRecordSelection] = useState<number | null>(null);
 
   const guestMode = !currentUser;
 
@@ -278,6 +302,8 @@ export default function App() {
           }),
         ),
       refreshGuideSources(),
+      refreshGuideImportRecords(),
+      refreshGuideImportTasks(),
     ]);
 
     const authState = await restoreAuthState().catch(() => null);
@@ -316,6 +342,8 @@ export default function App() {
     setLoading(false);
     setRailwayWorkspaceDraft(null);
     setDecisionModuleStates({});
+    setReferencedGuide(null);
+    setGuideSelectionRequest(null);
     setAuthReady(true);
   }
 
@@ -326,6 +354,40 @@ export default function App() {
     } catch {
       setGuideSources([]);
     }
+  }
+
+  async function refreshGuideImportRecords() {
+    try {
+      const records = await fetchGuideImportRecords();
+      setGuideImportRecords(records);
+    } catch {
+      setGuideImportRecords([]);
+    }
+  }
+
+  async function refreshGuideImportTasks() {
+    try {
+      const tasks = await fetchGuideImportTasks();
+      setGuideImportTasks(tasks);
+    } catch {
+      setGuideImportTasks([]);
+    }
+  }
+
+  async function pollGuideImportTaskUntilDone(taskId: string): Promise<GuideImportTaskItem> {
+    for (let index = 0; index < 120; index += 1) {
+      await delay(1500);
+      const task = await fetchGuideImportTask(taskId);
+      setActiveGuideImportTask(task);
+      setGuideImportTasks((current) => upsertGuideImportTask(current, task));
+      if (task.status === "succeeded") {
+        return task;
+      }
+      if (task.status === "failed") {
+        throw new Error(task.error_message || task.message || "后台抓取任务失败");
+      }
+    }
+    throw new Error("后台抓取仍在运行，请稍后在导入任务中心查看结果。");
   }
 
   async function refreshWorkspaceMemory(force = false, profileConversationId?: string | null) {
@@ -372,6 +434,18 @@ export default function App() {
     }
   }
 
+  function openAddGuideModal(recordId?: number) {
+    setGuideResult(null);
+    setLastGuideImport(null);
+    setLastImportedGuide(null);
+    setGuidePreview(null);
+    setActiveGuideImportTask(null);
+    setGuideImportRecordSelection(recordId ?? null);
+    setGuidePreview(null);
+    void Promise.allSettled([refreshGuideImportRecords(), refreshGuideImportTasks()]);
+    setModalOpen(true);
+  }
+
   async function recordPreferenceBehavior(event: PreferenceBehaviorEventPayload) {
     // 游客模式不写入画像行为事件，避免把临时浏览器状态误记成长期偏好。
     if (!currentUser) return;
@@ -387,15 +461,24 @@ export default function App() {
     setStreamStages([]);
     setLoading(true);
 
+    const selectedGuides =
+      "selected_guides" in context
+        ? context.selected_guides
+        : referencedGuide
+          ? [toSelectedGuideContext(referencedGuide)]
+          : undefined;
+    const requestContext: Record<string, unknown> = {
+      ...(selectedGuides ? { selected_guides: selectedGuides } : {}),
+      ...context,
+      persist_session: Boolean(currentUser),
+    };
+
     try {
       await streamChat(
         prompt,
         conversationId,
         searchMode,
-        {
-          ...context,
-          persist_session: Boolean(currentUser),
-        },
+        requestContext,
         {
           onStart: (id) => setConversationId(id),
           onStage: (stage) =>
@@ -407,8 +490,8 @@ export default function App() {
           onResult: (response) => {
             setConversationId(response.conversation_id);
             setLatest(response);
-            registerPlanVersion(response, context);
-            if (!context.decision_module_action) {
+            registerPlanVersion(response, requestContext);
+            if (!requestContext.decision_module_action) {
               setDecisionModuleStates({});
             }
             setMessages((current) => [...current, { role: "assistant", content: response.answer }]);
@@ -456,12 +539,110 @@ export default function App() {
   async function handleAddGuide(payload: { title: string; content: string; source_url?: string }) {
     setGuideLoading(true);
     setGuideResult(null);
+    setLastGuideImport(null);
+    setLastImportedGuide(null);
+    setGuidePreview(null);
     try {
       const result = await addGuide(payload);
       setGuideResult(`已入库：${String(result.city || "未知城市")}，切片 ${String(result.chunks || 0)} 条`);
-      await refreshGuideSources();
+      await Promise.allSettled([refreshGuideSources(), refreshGuideImportRecords()]);
     } catch {
       setGuideResult("攻略入库失败，请确认后端服务已经启动。");
+    } finally {
+      setGuideLoading(false);
+    }
+  }
+
+  async function handleImportGuideLink(payload: { url: string; category?: string; force_reimport?: boolean }) {
+    setGuideLoading(true);
+    setGuideResult(null);
+    setLastGuideImport(null);
+    setLastImportedGuide(null);
+    setGuidePreview(null);
+    try {
+      const result = await importGuideLink(payload);
+      setLastGuideImport(result);
+      setLastImportedGuide(result.guide || null);
+      if (result.status === "indexed") {
+        setGuideResult(
+          `智能导入成功：${result.title || "攻略"} / ${result.city || "未知城市"} / 质量 ${result.quality?.grade || "-"} (${String(result.quality?.score || 0)}) / 切片 ${String(result.chunks || 0)} 条${result.llm_enhanced ? " / 已做大模型增强" : ""}`,
+        );
+      } else if (result.status === "duplicate") {
+        setGuideResult(`已命中重复攻略：${result.title || "已存在条目"}，未重复入库。`);
+      } else if (result.status === "pending") {
+        setGuideResult(`链接已记录为待处理来源：${result.title || "未识别标题"}。当前正文不足，建议稍后重试或手动补录。`);
+      } else {
+        setGuideResult(result.message || "链接导入已完成。");
+      }
+      await Promise.allSettled([refreshGuideSources(), refreshGuideImportRecords()]);
+      return result;
+    } catch (error) {
+      setGuideResult(buildGuideImportErrorMessage(error, "攻略链接导入失败，请确认链接可公开访问并稍后重试。"));
+      return null;
+    } finally {
+      setGuideLoading(false);
+    }
+  }
+
+  async function handlePreviewGuideLink(payload: { url: string; category?: string }) {
+    setGuideLoading(true);
+    setGuideResult(null);
+    setLastGuideImport(null);
+    setLastImportedGuide(null);
+    setGuidePreview(null);
+    setActiveGuideImportTask(null);
+    try {
+      const task = await createGuideImportTask(payload);
+      setActiveGuideImportTask(task);
+      setGuideImportTasks((current) => upsertGuideImportTask(current, task));
+      setGuideResult(`后台抓取任务已创建：${task.id}，正在处理长图 OCR 与页面解析。`);
+      const completedTask = await pollGuideImportTaskUntilDone(task.id);
+      const result = completedTask.result;
+      if (!result) {
+        throw new Error(completedTask.error_message || completedTask.message || "后台任务未返回预览结果");
+      }
+      setGuidePreview(result);
+      setGuideResult(
+        result.status === "preview_ready"
+          ? `已抓取到可编辑预览：${result.title || "攻略"}，质量 ${result.quality?.grade || "-"} (${String(result.quality?.score || 0)})。`
+          : `已完成抓取但正文偏少：${result.title || "未识别标题"}，可在编辑区补正文后入库。`,
+      );
+      await Promise.allSettled([refreshGuideImportRecords(), refreshGuideImportTasks()]);
+      return result;
+    } catch (error) {
+      setGuideResult(buildGuideImportErrorMessage(error, "攻略链接预览失败，请确认链接可公开访问并稍后重试。"));
+      return null;
+    } finally {
+      setGuideLoading(false);
+    }
+  }
+
+  async function handleConfirmGuideImport(payload: {
+    url: string;
+    title: string;
+    content: string;
+    category?: string;
+    source_type?: string;
+    resolved_url?: string;
+    author?: string | null;
+    structured?: Record<string, unknown> | null;
+  }) {
+    setGuideLoading(true);
+    setGuideResult(null);
+    try {
+      const result = await confirmGuideLink(payload);
+      setLastGuideImport(result);
+      setLastImportedGuide(result.guide || null);
+      if (result.status === "duplicate") {
+        setGuideResult(`已命中重复攻略：${result.title || "已存在条目"}，未重复入库。`);
+      } else {
+        setGuideResult(`确认入库成功：${result.title || payload.title}，切片 ${String(result.chunks || 0)} 条。`);
+      }
+      await Promise.allSettled([refreshGuideSources(), refreshGuideImportRecords()]);
+      return result;
+    } catch (error) {
+      setGuideResult(buildGuideImportErrorMessage(error, "确认入库失败，请检查标题和正文后重试。"));
+      return null;
     } finally {
       setGuideLoading(false);
     }
@@ -470,12 +651,14 @@ export default function App() {
   async function handleCrawlWeibo() {
     setCrawlLoading(true);
     setGuideResult(null);
+    setLastGuideImport(null);
+    setLastImportedGuide(null);
     try {
       const result = await crawlWeiboGuides();
       setGuideResult(
         `采集完成：发现 ${String(result.found || 0)} 条，正文入库 ${String(result.indexed || 0)} 条，待处理 ${String(result.pending || 0)} 条，跳过 ${String(result.skipped || 0)} 条。`,
       );
-      await refreshGuideSources();
+      await Promise.allSettled([refreshGuideSources(), refreshGuideImportRecords()]);
     } catch {
       setGuideResult("微博采集失败，可能是网络、平台限制或页面结构变化，请稍后重试。");
     } finally {
@@ -497,6 +680,8 @@ export default function App() {
     setStreamStages([]);
     setRailwayWorkspaceDraft(null);
     setDecisionModuleStates({});
+    setReferencedGuide(null);
+    setGuideSelectionRequest(null);
     setMessages(buildWelcomeMessages(user, recommendationHint, profile));
   }
 
@@ -521,6 +706,8 @@ export default function App() {
     setStreamStages([]);
     setRailwayWorkspaceDraft(null);
     setDecisionModuleStates({});
+    setReferencedGuide(null);
+    setGuideSelectionRequest(null);
 
     const latestVersion = versions[versions.length - 1];
     setActiveVersionId(latestVersion?.id || null);
@@ -611,7 +798,14 @@ export default function App() {
   }
 
   function handleUseGuideInPlanning(guide: GuideDetail) {
+    setModalOpen(false);
     setWorkspaceView("planning");
+    setReferencedGuide(guide);
+    setGuideSelectionRequest({
+      guideId: guide.id,
+      detailMode: "preview",
+      nonce: Date.now(),
+    });
     void recordPreferenceBehavior({
       action: "continue_optimize",
       payload: {
@@ -625,16 +819,148 @@ export default function App() {
     });
   }
 
+  function handleOptimizeImportedGuide(guide: GuideDetail) {
+    setModalOpen(false);
+    setWorkspaceView("planning");
+    setReferencedGuide(guide);
+    setGuideSelectionRequest({
+      guideId: guide.id,
+      detailMode: "preview",
+      nonce: Date.now(),
+    });
+    void recordPreferenceBehavior({
+      action: "continue_optimize",
+      payload: {
+        title: `基于导入攻略优化：${guide.title}`,
+        summary: guide.summary,
+        destination_city: guide.city,
+      },
+    }).catch(() => undefined);
+    void handlePrompt(buildImportedGuideOptimizationPrompt(guide), {
+      selected_guides: [toSelectedGuideContext(guide)],
+      imported_guide_action: "optimize",
+    });
+  }
+
+  function handleCreatePlanFromGuide(guide: GuideDetail) {
+    setModalOpen(false);
+    setWorkspaceView("planning");
+    setReferencedGuide(guide);
+    setGuideSelectionRequest({
+      guideId: guide.id,
+      detailMode: "preview",
+      nonce: Date.now(),
+    });
+    void recordPreferenceBehavior({
+      action: "continue_optimize",
+      payload: {
+        title: `基于攻略生成新方案：${guide.title}`,
+        summary: guide.summary,
+        destination_city: guide.city,
+      },
+    }).catch(() => undefined);
+    void handlePrompt(buildGuideFreshPlanPrompt(guide), {
+      selected_guides: [toSelectedGuideContext(guide)],
+      guide_workflow: "fresh_plan",
+    });
+  }
+
+  function handleGuideQuickAsk(guide: GuideDetail, prompt: string) {
+    setModalOpen(false);
+    setWorkspaceView("planning");
+    setReferencedGuide(guide);
+    setGuideSelectionRequest({
+      guideId: guide.id,
+      detailMode: "preview",
+      nonce: Date.now(),
+    });
+    void recordPreferenceBehavior({
+      action: "continue_optimize",
+      payload: {
+        title: `攻略快捷提问：${guide.title}`,
+        summary: prompt.slice(0, 80),
+        destination_city: guide.city,
+      },
+    }).catch(() => undefined);
+    void handlePrompt(prompt, {
+      selected_guides: [toSelectedGuideContext(guide)],
+      guide_workflow: "detail_quick_ask",
+    });
+  }
+
+  function handleSetGuideAsPrimaryReference(guide: GuideDetail) {
+    setModalOpen(false);
+    setWorkspaceView("planning");
+    setReferencedGuide(guide);
+    setGuideSelectionRequest({
+      guideId: guide.id,
+      detailMode: "preview",
+      nonce: Date.now(),
+    });
+    void recordPreferenceBehavior({
+      action: "continue_optimize",
+      payload: {
+        title: `设为主参考攻略：${guide.title}`,
+        summary: guide.summary,
+        destination_city: guide.city,
+      },
+    }).catch(() => undefined);
+  }
+
+  function handleClearReferencedGuide() {
+    setReferencedGuide(null);
+  }
+
+  function handleOpenReferencedGuide(detailMode: "preview" | "edit" = "preview") {
+    if (!referencedGuide) return;
+    setGuideSelectionRequest({
+      guideId: referencedGuide.id,
+      detailMode,
+      nonce: Date.now(),
+    });
+    setWorkspaceView("evidence");
+    setInsightOpen(false);
+  }
+
+  function handleOpenGuideImportRecord(recordId: number) {
+    setWorkspaceView("evidence");
+    openAddGuideModal(recordId);
+    void recordPreferenceBehavior({
+      action: "audit_open",
+      payload: {
+        import_record_id: recordId,
+      },
+    }).catch(() => undefined);
+  }
+
   function registerPlanVersion(response: ChatResponse, context: Record<string, unknown>) {
     // 每次智能体产出都保留为一个版本，方便用户在“原始方案”和“二次优化方案”之间切换回看。
     const versionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const isEditedPlan = Boolean(context.edited_plan);
+    const guideContext = Array.isArray(context.selected_guides)
+      ? context.selected_guides[0] as { title?: string } | undefined
+      : undefined;
     const optimizedCount = planVersions.filter((item) => item.reason.includes("二次优化")).length;
+    const reason = context.imported_guide_action === "optimize" && guideContext?.title
+      ? `基于攻略《${guideContext.title}》二次优化`
+      : context.guide_workflow === "fresh_plan" && guideContext?.title
+        ? `基于攻略《${guideContext.title}》生成新方案`
+      : context.guide_workflow === "detail_quick_ask" && guideContext?.title
+        ? `围绕攻略《${guideContext.title}》继续追问`
+      : isEditedPlan
+        ? "基于手动编辑草稿二次优化"
+        : guideContext?.title
+          ? `结合攻略《${guideContext.title}》生成方案`
+          : "智能体首次生成方案";
     const version: PlanVersion = {
       id: versionId,
-      name: isEditedPlan ? `优化版 ${optimizedCount + 1}` : planVersions.length ? `方案 ${planVersions.length + 1}` : "初版",
+      name: isEditedPlan || context.imported_guide_action === "optimize"
+        ? `优化版 ${optimizedCount + 1}`
+        : planVersions.length
+          ? `方案 ${planVersions.length + 1}`
+          : "初版",
       createdAt: new Date().toISOString(),
-      reason: isEditedPlan ? "基于手动编辑草稿二次优化" : "智能体首次生成方案",
+      reason,
       response,
     };
 
@@ -822,7 +1148,7 @@ export default function App() {
         status={status}
         currentUser={currentUser}
         guestMode={guestMode}
-        onAddGuide={() => setModalOpen(true)}
+        onAddGuide={openAddGuideModal}
         onNewConversation={() => handleNewConversation()}
         onHistoryOpen={() => {
           if (currentUser) {
@@ -888,10 +1214,10 @@ export default function App() {
         ) : null}
 
         {workspaceView === "planning" ? (
-          <PlanningWorkbench
-            latest={latest}
-            searchMode={searchMode}
-            loading={loading}
+            <PlanningWorkbench
+              latest={latest}
+              searchMode={searchMode}
+              loading={loading}
             streamStages={streamStages}
             messages={messages}
             planVersions={planVersions}
@@ -901,18 +1227,21 @@ export default function App() {
             shareUrl={shareUrl}
             guestCarryoverReady={Boolean(guestCarryoverDraft)}
             canShareVersion={Boolean(currentUser)}
-            currentUser={currentUser}
-            preferenceProfile={preferenceProfile}
-            railwayWorkspaceDraft={railwayWorkspaceDraft}
-            decisionModuleStates={decisionModuleStates}
-            onOpenPlanner={() => setPlannerOpen(true)}
-            onOpenEvidence={() => setInsightOpen(true)}
-            onOpenUserCenter={() => setUserOpen(true)}
-            onJump={setWorkspaceView}
-            onApplyRailwayDraft={handleApplyRailwayWorkspaceDraft}
-            onSubmit={handlePrompt}
-            onOptimizeItinerary={handleOptimizeItinerary}
-            onDecisionModuleAction={handleDecisionModuleAction}
+              currentUser={currentUser}
+              preferenceProfile={preferenceProfile}
+              railwayWorkspaceDraft={railwayWorkspaceDraft}
+              decisionModuleStates={decisionModuleStates}
+              referencedGuide={referencedGuide}
+              onOpenPlanner={() => setPlannerOpen(true)}
+              onOpenEvidence={() => setInsightOpen(true)}
+              onOpenUserCenter={() => setUserOpen(true)}
+              onJump={setWorkspaceView}
+              onApplyRailwayDraft={handleApplyRailwayWorkspaceDraft}
+              onClearReferencedGuide={handleClearReferencedGuide}
+              onOpenReferencedGuide={handleOpenReferencedGuide}
+              onSubmit={handlePrompt}
+              onOptimizeItinerary={handleOptimizeItinerary}
+              onDecisionModuleAction={handleDecisionModuleAction}
             onVersionSelect={handleSelectVersion}
             onExportVersion={handleExportVersion}
             onShareVersion={handleShareVersion}
@@ -961,10 +1290,14 @@ export default function App() {
               profileHighlights={buildPlanningHighlights(preferenceProfile, 8)}
               profileDigest={buildPlanningDigest(preferenceProfile)}
               decisionModuleStates={decisionModuleStates}
+              referencedGuide={referencedGuide}
               onOpenPlanner={() => setPlannerOpen(true)}
               onOpenEvidence={() => setInsightOpen(true)}
+              onOpenEvidenceWorkspace={() => setWorkspaceView("evidence")}
               onOpenRailway={() => setWorkspaceView("railway")}
               onOpenUserCenter={() => setUserOpen(true)}
+              onClearReferencedGuide={handleClearReferencedGuide}
+              onOpenReferencedGuide={handleOpenReferencedGuide}
               onSubmit={handlePrompt}
               onOptimizeItinerary={handleOptimizeItinerary}
               onDecisionModuleAction={handleDecisionModuleAction}
@@ -985,17 +1318,25 @@ export default function App() {
         ) : null}
 
         {workspaceView === "evidence" ? (
-          <EvidenceWorkbench
-            latest={latest}
-            guideSources={guideSources}
-            searchMode={searchMode}
-            guideResult={guideResult}
-            crawlLoading={crawlLoading}
-            onSearchModeChange={setSearchMode}
-            onAddGuide={() => setModalOpen(true)}
-            onCrawlWeibo={handleCrawlWeibo}
+            <EvidenceWorkbench
+              latest={latest}
+              guideSources={guideSources}
+              searchMode={searchMode}
+              guideResult={guideResult}
+              crawlLoading={crawlLoading}
+              guideSelectionRequest={guideSelectionRequest}
+              onSearchModeChange={setSearchMode}
+              onAddGuide={openAddGuideModal}
+              onCrawlWeibo={handleCrawlWeibo}
             onPrompt={(prompt) => void handlePrompt(prompt)}
             onUseGuide={handleUseGuideInPlanning}
+            onPlanFromGuide={handleCreatePlanFromGuide}
+            onOptimizeGuide={handleOptimizeImportedGuide}
+            onSetPrimaryGuide={handleSetGuideAsPrimaryReference}
+            onOpenImportRecord={handleOpenGuideImportRecord}
+            onGuideQuickAsk={handleGuideQuickAsk}
+            activeReferencedGuide={referencedGuide}
+            onOpenPlanningWorkspace={() => setWorkspaceView("planning")}
           />
         ) : null}
 
@@ -1077,9 +1418,25 @@ export default function App() {
         loading={guideLoading}
         crawlLoading={crawlLoading}
         result={guideResult}
-        onClose={() => setModalOpen(false)}
+        preselectedRecordId={guideImportRecordSelection}
+        onClose={() => {
+          setModalOpen(false);
+          setGuideImportRecordSelection(null);
+        }}
         onSubmit={handleAddGuide}
+        onImportLink={handleImportGuideLink}
+        onPreviewLink={handlePreviewGuideLink}
+        onConfirmImport={handleConfirmGuideImport}
         onCrawlWeibo={handleCrawlWeibo}
+        importedGuide={lastImportedGuide}
+        importResult={lastGuideImport}
+        previewResult={guidePreview}
+        importRecords={guideImportRecords}
+        importTasks={guideImportTasks}
+        activeImportTask={activeGuideImportTask}
+        onUseImportedGuide={handleUseGuideInPlanning}
+        onOptimizeImportedGuide={handleOptimizeImportedGuide}
+        onSetPrimaryGuide={handleSetGuideAsPrimaryReference}
       />
 
       <HistoryCenter
@@ -1390,11 +1747,14 @@ function PlanningWorkbench({
   preferenceProfile,
   railwayWorkspaceDraft,
   decisionModuleStates,
+  referencedGuide,
   onOpenPlanner,
   onOpenEvidence,
   onOpenUserCenter,
   onJump,
   onApplyRailwayDraft,
+  onClearReferencedGuide,
+  onOpenReferencedGuide,
   onSubmit,
   onOptimizeItinerary,
   onDecisionModuleAction,
@@ -1418,11 +1778,14 @@ function PlanningWorkbench({
   preferenceProfile: PreferenceProfile | null;
   railwayWorkspaceDraft: RailwayWorkspaceDraft | null;
   decisionModuleStates: Record<string, DecisionModuleState>;
+  referencedGuide: GuideDetail | null;
   onOpenPlanner: () => void;
   onOpenEvidence: () => void;
   onOpenUserCenter: () => void;
   onJump: (view: WorkspaceView) => void;
   onApplyRailwayDraft: () => void;
+  onClearReferencedGuide: () => void;
+  onOpenReferencedGuide: (detailMode?: "preview" | "edit") => void;
   onSubmit: (message: string) => void;
   onOptimizeItinerary: (editedPlan: Record<string, unknown>) => void;
   onDecisionModuleAction: (module: DecisionModule, action: "accept" | "ignore" | "regenerate") => void;
@@ -1490,10 +1853,14 @@ function PlanningWorkbench({
           profileHighlights={profileHighlights}
           profileDigest={profileDigest}
           decisionModuleStates={decisionModuleStates}
+          referencedGuide={referencedGuide}
           onOpenPlanner={onOpenPlanner}
           onOpenEvidence={onOpenEvidence}
+          onOpenEvidenceWorkspace={() => onJump("evidence")}
           onOpenRailway={() => onJump("railway")}
           onOpenUserCenter={onOpenUserCenter}
+          onClearReferencedGuide={onClearReferencedGuide}
+          onOpenReferencedGuide={onOpenReferencedGuide}
           onSubmit={onSubmit}
           onOptimizeItinerary={onOptimizeItinerary}
           onDecisionModuleAction={onDecisionModuleAction}
@@ -2077,22 +2444,38 @@ function EvidenceWorkbench({
   searchMode,
   guideResult,
   crawlLoading,
+  guideSelectionRequest,
   onSearchModeChange,
   onAddGuide,
   onCrawlWeibo,
   onPrompt,
   onUseGuide,
+  onPlanFromGuide,
+  onOptimizeGuide,
+  onSetPrimaryGuide,
+  onOpenImportRecord,
+  onGuideQuickAsk,
+  activeReferencedGuide,
+  onOpenPlanningWorkspace,
 }: {
   latest: ChatResponse | null;
   guideSources: GuideSourceItem[];
   searchMode: SearchMode;
   guideResult: string | null;
   crawlLoading: boolean;
+  guideSelectionRequest: GuideSelectionRequest | null;
   onSearchModeChange: (mode: SearchMode) => void;
   onAddGuide: () => void;
   onCrawlWeibo: () => void;
   onPrompt: (prompt: string) => void;
   onUseGuide: (guide: GuideDetail) => void;
+  onPlanFromGuide: (guide: GuideDetail) => void;
+  onOptimizeGuide: (guide: GuideDetail) => void;
+  onSetPrimaryGuide: (guide: GuideDetail) => void;
+  onOpenImportRecord: (recordId: number) => void;
+  onGuideQuickAsk: (guide: GuideDetail, prompt: string) => void;
+  activeReferencedGuide: GuideDetail | null;
+  onOpenPlanningWorkspace: () => void;
 }) {
   const modeLabel =
     searchMode === "auto" ? "自动检索" : searchMode === "local_only" ? "仅攻略库" : "联网增强";
@@ -2133,6 +2516,14 @@ function EvidenceWorkbench({
         onAddGuide={onAddGuide}
         onCrawlWeibo={onCrawlWeibo}
         onUseGuide={onUseGuide}
+        onPlanFromGuide={onPlanFromGuide}
+        onOptimizeGuide={onOptimizeGuide}
+        onSetPrimaryGuide={onSetPrimaryGuide}
+        onOpenImportRecord={onOpenImportRecord}
+        onGuideQuickAsk={onGuideQuickAsk}
+        activeReferencedGuide={activeReferencedGuide}
+        onOpenPlanningWorkspace={onOpenPlanningWorkspace}
+        preselectedGuideRequest={guideSelectionRequest}
       />
 
       <div className="evidence-grid">
@@ -2856,6 +3247,59 @@ function buildGuideAdoptionPrompt(guide: GuideDetail) {
   ].filter(Boolean).join("\n");
 }
 
+function buildGuideFreshPlanPrompt(guide: GuideDetail) {
+  const structured = guide.structured;
+  const route = structured?.route_nodes?.slice(0, 8).join(" -> ");
+  const scenic = structured?.scenic_spots?.slice(0, 8).join("、");
+  const food = structured?.food_spots?.slice(0, 6).join("、");
+  const transport = structured?.transport_modes?.join("、");
+  const riskNotes = structured?.risk_notes?.slice(0, 4).join("；");
+  const budget = structured?.budget_range
+    || (guide.budget_min != null && guide.budget_max != null
+      ? `${guide.budget_min}-${guide.budget_max}元`
+      : guide.budget_min != null
+        ? `约${guide.budget_min}元`
+        : "");
+
+  return [
+    `请基于攻略《${guide.title}》直接生成一版完整、可执行的新旅行方案。`,
+    `目的地：${guide.city}。`,
+    guide.days ? `建议天数：${guide.days}天。` : "",
+    budget ? `预算线索：${budget}。` : "",
+    route ? `可参考路线：${route}。` : "",
+    scenic ? `优先景点：${scenic}。` : "",
+    food ? `可吸收的美食线索：${food}。` : "",
+    transport ? `交通偏好：${transport}。` : "",
+    riskNotes ? `需要保留的风险提醒：${riskNotes}。` : "",
+    guide.summary ? `攻略摘要：${guide.summary}` : "",
+    "请输出每日安排、交通建议、预算拆分、雨天备选、风险提醒和可调整项，并说明哪些内容直接承接自该攻略。",
+  ].filter(Boolean).join("\n");
+}
+
+function buildImportedGuideOptimizationPrompt(guide: GuideDetail) {
+  const structured = guide.structured;
+  const scenic = structured?.scenic_spots?.slice(0, 8).join("、");
+  const food = structured?.food_spots?.slice(0, 8).join("、");
+  const transport = structured?.transport_modes?.join("、");
+  const lodging = structured?.lodging_suggestions?.slice(0, 5).join("、");
+  const style = structured?.travel_style_tags?.join("、");
+  const contentPreview = guide.content.slice(0, 1800);
+
+  return [
+    `我刚导入了一篇攻略《${guide.title}》，请把它作为本轮规划的核心参考资料。`,
+    `目的地：${guide.city}。`,
+    guide.days ? `原攻略建议天数：${guide.days}天。` : "",
+    transport ? `原攻略交通线索：${transport}。` : "",
+    lodging ? `原攻略住宿线索：${lodging}。` : "",
+    style ? `原攻略玩法风格：${style}。` : "",
+    scenic ? `原攻略景点线索：${scenic}。` : "",
+    food ? `原攻略美食线索：${food}。` : "",
+    guide.summary ? `原攻略摘要：${guide.summary}` : "",
+    contentPreview ? `原攻略正文节选：\n${contentPreview}` : "",
+    "请不要简单复述原文，而是进行产品级旅行规划优化：补充交通衔接、雨天备选、行程强度、预算提示和风险提醒，并说明哪些内容来自导入攻略、哪些是你结合实时工具与上下文做的优化。",
+  ].filter(Boolean).join("\n");
+}
+
 function buildAppDecisionModuleKey(module: DecisionModule) {
   return `${module.type}::${module.title}`;
 }
@@ -2886,6 +3330,37 @@ function formatVersionTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function buildGuideImportErrorMessage(error: unknown, fallback: string) {
+  // 中文注释：导入链路涉及浏览器渲染、OCR 与大模型增强，前端需要把超时和后端诊断区分展示。
+  if (axios.isAxiosError(error)) {
+    if (error.code === "ECONNABORTED") {
+      return "攻略导入仍在处理中但前端等待超时，请稍后查看导入记录；也可以重新点击“抓取并编辑”。";
+    }
+    if (!error.response) {
+      return "攻略导入请求未连接到后端，请确认后端服务仍在运行。";
+    }
+  }
+  if (error instanceof ApiCodeError) {
+    const detail = typeof error.data === "object" && error.data && "error" in error.data
+      ? String((error.data as { error?: unknown }).error || "")
+      : "";
+    return detail ? `${error.message}：${detail}` : error.message;
+  }
+  return fallback;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function upsertGuideImportTask(tasks: GuideImportTaskItem[], task: GuideImportTaskItem) {
+  const exists = tasks.some((item) => item.id === task.id);
+  if (!exists) {
+    return [task, ...tasks].slice(0, 30);
+  }
+  return tasks.map((item) => (item.id === task.id ? task : item));
 }
 
 function buildLocalCompare(base: PlanVersion, target: PlanVersion): PlanVersionCompare {

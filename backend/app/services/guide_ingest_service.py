@@ -5,7 +5,8 @@ import re
 from sqlalchemy.orm import Session
 
 from app.db.models import Guide, GuideChunk, GuideSource, Place
-from app.schemas.guides import GuideCreateRequest
+from app.db.models import utc_now
+from app.schemas.guides import GuideCreateRequest, GuideUpdateRequest
 from app.services.vector_store_service import VectorStoreService
 
 
@@ -333,16 +334,25 @@ class GuideIngestService:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def add_guide(self, payload: GuideCreateRequest) -> dict:
+    def add_guide(
+        self,
+        payload: GuideCreateRequest,
+        structured_override: dict | None = None,
+        source_metadata_override: dict | None = None,
+    ) -> dict:
         """新增攻略并写入 SQLite 与向量索引。"""
         cleaned = clean_text(payload.content)
         structured = build_structured_guide_data(payload.title, cleaned)
+        if structured_override:
+            structured = self._merge_structured_data(structured, structured_override)
         city = structured["city"]
         days = structured["days"]
         places = structured["places"]
         summary = structured["summary"]
         travel_style_tags = structured["travel_style_tags"]
         vector_chunks: list[dict] = []
+        source_metadata_override = source_metadata_override or {}
+        author = source_metadata_override.get("author") or payload.author
 
         source = GuideSource(
             source_type=payload.source_type,
@@ -352,6 +362,7 @@ class GuideIngestService:
             category=payload.category,
             crawl_status=payload.crawl_status,
             title=payload.title,
+            author=author,
             raw_text=cleaned,
             # 中文注释：这里保留来源说明，方便后续答辩和生产化溯源。
             license_note="用户添加或课程演示数据，回答时请保留来源说明。",
@@ -419,3 +430,131 @@ class GuideIngestService:
             "indexed": vector_indexed,
             "extracted": structured,
         }
+
+    def update_guide(self, guide_id: int, payload: GuideUpdateRequest) -> dict | None:
+        """更新已入库攻略，并同步重建地点、切片和向量索引。"""
+        guide = self.db.get(Guide, guide_id)
+        if not guide:
+            return None
+
+        source = self.db.get(GuideSource, guide.source_id)
+        if not source:
+            return None
+
+        cleaned = clean_text(payload.content)
+        structured = build_structured_guide_data(payload.title, cleaned)
+        if payload.structured:
+            structured = self._merge_structured_data(structured, self._normalize_structured_override(payload.structured))
+
+        city = structured["city"]
+        travel_style_tags = structured["travel_style_tags"]
+        places = structured["places"]
+
+        old_chunk_ids = [
+            chunk_id
+            for (chunk_id,) in self.db.query(GuideChunk.id).filter(GuideChunk.guide_id == guide.id).all()
+        ]
+
+        source.title = payload.title
+        source.raw_text = cleaned
+        source.category = payload.category
+        source.author = payload.author
+        if payload.source_url is not None:
+            source.source_url = payload.source_url
+            source.resolved_url = payload.source_url
+        source.crawl_status = "indexed"
+
+        guide.title = payload.title
+        guide.city = city
+        guide.days = structured["days"]
+        guide.budget_min = structured["budget_min"]
+        guide.budget_max = structured["budget_max"]
+        guide.travel_style = ",".join(travel_style_tags) if travel_style_tags else None
+        guide.summary = structured["summary"]
+        guide.status = "active"
+        guide.updated_at = utc_now()
+
+        self.db.query(Place).filter(Place.guide_id == guide.id).delete(synchronize_session=False)
+        self.db.query(GuideChunk).filter(GuideChunk.guide_id == guide.id).delete(synchronize_session=False)
+        self.db.flush()
+
+        for place in places:
+            self.db.add(
+                Place(
+                    guide_id=guide.id,
+                    name=place["name"],
+                    city=city,
+                    place_type=place.get("type") or "scenic",
+                )
+            )
+
+        vector_chunks: list[dict] = []
+        chunks = split_chunks(cleaned)
+        for index, chunk in enumerate(chunks):
+            digest = hashlib.sha256(chunk.encode("utf-8")).hexdigest()
+            chunk_id = f"guide-{guide.id}-chunk-{index}"
+            metadata = {
+                "guide_id": guide.id,
+                "title": guide.title,
+                "city": guide.city,
+                "source_url": source.source_url,
+                "source_type": source.source_type,
+                "travel_style_tags": travel_style_tags,
+            }
+            vector_chunks.append({"id": chunk_id, "content": chunk, "metadata": metadata})
+            self.db.add(
+                GuideChunk(
+                    id=chunk_id,
+                    guide_id=guide.id,
+                    chunk_index=index,
+                    content_hash=digest,
+                    content=chunk,
+                    token_count=len(chunk),
+                    metadata_json=json.dumps(metadata, ensure_ascii=False),
+                )
+            )
+
+        self.db.commit()
+        vector_store = VectorStoreService()
+        vector_deleted = vector_store.delete_chunks(old_chunk_ids)
+        vector_indexed = vector_store.index_chunks(vector_chunks)
+        return {
+            "guide_id": guide.id,
+            "city": city,
+            "chunks": len(chunks),
+            "indexed": vector_indexed,
+            "old_vectors_deleted": vector_deleted,
+            "extracted": structured,
+        }
+
+    def _merge_structured_data(self, base: dict, override: dict) -> dict:
+        """合并规则抽取结果和外部补强结果。"""
+        merged = dict(base)
+        for key, value in override.items():
+            if value in (None, "", []):
+                continue
+            if key == "places" and isinstance(value, list):
+                merged[key] = value
+                merged["scenic_spots"] = [item["name"] for item in value if item.get("type") == "scenic"]
+                merged["food_spots"] = [item["name"] for item in value if item.get("type") == "food"]
+                continue
+            merged[key] = value
+        if merged.get("budget_min") and merged.get("budget_max"):
+            if merged["budget_min"] == merged["budget_max"]:
+                merged["budget_range"] = f"约{merged['budget_min']}元"
+            else:
+                merged["budget_range"] = f"{merged['budget_min']}-{merged['budget_max']}元"
+        return merged
+
+    def _normalize_structured_override(self, override: dict) -> dict:
+        """把前端结构化草稿整理成入库服务内部统一格式。"""
+        normalized = dict(override)
+        scenic_spots = normalized.get("scenic_spots") or []
+        food_spots = normalized.get("food_spots") or []
+        places = normalized.get("places")
+        if not places and (scenic_spots or food_spots):
+            normalized["places"] = [
+                *[{"name": name, "type": "scenic"} for name in scenic_spots if name],
+                *[{"name": name, "type": "food"} for name in food_spots if name],
+            ]
+        return normalized

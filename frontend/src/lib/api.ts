@@ -12,6 +12,12 @@ import type {
   GuestSessionImportPayload,
   GuestSessionImportResult,
   GuideDetail,
+  GuideImportRecordItem,
+  GuideImportTaskItem,
+  GuideLinkImportResult,
+  GuideLinkPreviewResult,
+  GuideUpdatePayload,
+  GuideUpdateResult,
   GuideItem,
   GuideLibraryResult,
   GuideSourceItem,
@@ -37,6 +43,7 @@ const ACCESS_TOKEN_KEY = "tripsage_access_token";
 const REFRESH_TOKEN_KEY = "tripsage_refresh_token";
 const CLIENT_NAME = "TripSage Web";
 const CHAT_TIMEOUT_MS = 180000;
+const GUIDE_IMPORT_TIMEOUT_MS = 240000;
 
 type ApiConfig = InternalAxiosRequestConfig & {
   _authRetry?: boolean;
@@ -320,6 +327,68 @@ export async function addGuide(payload: {
   );
 }
 
+export async function importGuideLink(payload: {
+  url: string;
+  category?: string;
+  force_reimport?: boolean;
+}): Promise<GuideLinkImportResult> {
+  return unwrapRaw(
+    api.post<ApiResponse<GuideLinkImportResult>>("/guides/import-link", payload, {
+      timeout: GUIDE_IMPORT_TIMEOUT_MS,
+    }),
+  );
+}
+
+export async function previewGuideLink(payload: {
+  url: string;
+  category?: string;
+  force_reimport?: boolean;
+}): Promise<GuideLinkPreviewResult> {
+  return unwrapRaw(
+    api.post<ApiResponse<GuideLinkPreviewResult>>("/guides/import-link/preview", payload, {
+      timeout: GUIDE_IMPORT_TIMEOUT_MS,
+    }),
+  );
+}
+
+export async function createGuideImportTask(payload: {
+  url: string;
+  category?: string;
+  force_reimport?: boolean;
+}): Promise<GuideImportTaskItem> {
+  return unwrapRaw(api.post<ApiResponse<GuideImportTaskItem>>("/guides/import-link/tasks", payload));
+}
+
+export async function fetchGuideImportTask(taskId: string): Promise<GuideImportTaskItem> {
+  return unwrapRaw(api.get<ApiResponse<GuideImportTaskItem>>(`/guides/import-link/tasks/${taskId}`));
+}
+
+export async function fetchGuideImportTasks(): Promise<GuideImportTaskItem[]> {
+  return unwrapRaw(
+    api.get<ApiResponse<{ items: GuideImportTaskItem[]; total: number }>>("/guides/import-link/tasks", {
+      params: { limit: 30 },
+    }),
+  ).then((data) => data.items);
+}
+
+export async function confirmGuideLink(payload: {
+  url: string;
+  title: string;
+  content: string;
+  category?: string;
+  source_type?: string;
+  resolved_url?: string;
+  author?: string | null;
+  structured?: Record<string, unknown> | null;
+  force_reimport?: boolean;
+}): Promise<GuideLinkImportResult> {
+  return unwrapRaw(
+    api.post<ApiResponse<GuideLinkImportResult>>("/guides/import-link/confirm", payload, {
+      timeout: GUIDE_IMPORT_TIMEOUT_MS,
+    }),
+  );
+}
+
 export async function fetchGuides(): Promise<GuideItem[]> {
   return unwrapRaw(
     api.get<ApiResponse<{ items: GuideItem[]; total: number }>>("/guides"),
@@ -346,6 +415,10 @@ export async function fetchGuideDetail(guideId: number): Promise<GuideDetail> {
   return unwrapRaw(api.get<ApiResponse<GuideDetail>>(`/guides/${guideId}`));
 }
 
+export async function updateGuide(guideId: number, payload: GuideUpdatePayload): Promise<GuideUpdateResult> {
+  return unwrapRaw(api.put<ApiResponse<GuideUpdateResult>>(`/guides/${guideId}`, payload));
+}
+
 export async function fetchGuideSources(status?: string): Promise<GuideSourceItem[]> {
   return unwrapRaw(
     api.get<ApiResponse<{ items: GuideSourceItem[]; total: number }>>("/guides/sources", {
@@ -353,6 +426,14 @@ export async function fetchGuideSources(status?: string): Promise<GuideSourceIte
         limit: 500,
         ...(status ? { status } : {}),
       },
+    }),
+  ).then((data) => data.items);
+}
+
+export async function fetchGuideImportRecords(): Promise<GuideImportRecordItem[]> {
+  return unwrapRaw(
+    api.get<ApiResponse<{ items: GuideImportRecordItem[]; total: number }>>("/guides/import-records", {
+      params: { limit: 50 },
     }),
   ).then((data) => data.items);
 }

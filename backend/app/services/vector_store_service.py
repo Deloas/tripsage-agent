@@ -63,6 +63,17 @@ class VectorStoreService:
         except Exception:  # noqa: BLE001
             return False
 
+    def delete_chunks(self, chunk_ids: list[str]) -> bool:
+        """删除指定向量切片，用于攻略编辑后重建索引。"""
+        if not chunk_ids:
+            return True
+        try:
+            collection = self._get_collection()
+            collection.delete(ids=chunk_ids)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
     def search(self, query: str, top_k: int = 5, city: str | None = None) -> list[dict[str, Any]]:
         """执行向量检索，返回 chunk_id 和归一化分数。"""
         try:
@@ -122,4 +133,3 @@ class VectorStoreService:
         client = self._get_client()
         self._collection = client.get_or_create_collection(self.collection_name)
         return self._collection
-

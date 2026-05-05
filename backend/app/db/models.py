@@ -95,6 +95,44 @@ class GuideSource(Base):
     guides: Mapped[list["Guide"]] = relationship(back_populates="source")
 
 
+class GuideImportRecord(Base):
+    __tablename__ = "guide_import_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    url: Mapped[str] = mapped_column(String(1000), index=True)
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    mode: Mapped[str] = mapped_column(String(40), default="link")
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source_type: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    guide_id: Mapped[int | None] = mapped_column(ForeignKey("guides.id"), nullable=True, index=True)
+    source_id: Mapped[int | None] = mapped_column(ForeignKey("guide_sources.id"), nullable=True, index=True)
+    reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    quality_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diagnostics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class GuideImportTask(Base):
+    __tablename__ = "guide_import_tasks"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    url: Mapped[str] = mapped_column(String(1000), index=True)
+    category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    force_reimport: Mapped[bool] = mapped_column(default=False)
+    mode: Mapped[str] = mapped_column(String(40), default="preview")
+    status: Mapped[str] = mapped_column(String(30), index=True, default="queued")
+    stage: Mapped[str] = mapped_column(String(60), default="queued")
+    progress: Mapped[int] = mapped_column(Integer, default=5)
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Guide(Base):
     __tablename__ = "guides"
 
