@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Copy,
   GitBranch,
   Layers3,
   LocateFixed,
@@ -33,6 +34,7 @@ interface AiMapWorkbenchProps {
   latest: ChatResponse | null;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   onPrompt: (prompt: string) => void;
+  onFocusChange?: (focus: { day?: number; pointName?: string | null } | null) => void;
   focus?: {
     day?: number;
     pointName?: string | null;
@@ -54,7 +56,7 @@ const MAX_ITINERARY_DETAIL_LENGTH = 1800;
 const AI_MAP_STORAGE_PREFIX = "tripsage_ai_map_result:";
 const aiMapCache = new Map<string, AiMapWorkbenchResult>();
 
-export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkbenchProps) {
+export function AiMapWorkbench({ latest, messages, onPrompt, onFocusChange, focus }: AiMapWorkbenchProps) {
   const mapRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<any>(null);
   const poiCardRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -68,6 +70,8 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
   const [selectedDay, setSelectedDay] = useState<number | "all">("all");
   const [pointMode, setPointMode] = useState<"main" | "raw">("main");
   const [selectedRouteIndex, setSelectedRouteIndex] = useState<number | null>(null);
+  const [localFocusName, setLocalFocusName] = useState<string | null>(focus?.pointName || null);
+  const [shareCopied, setShareCopied] = useState(false);
 
   const structuredPlan = useMemo(() => buildStructuredPlanPayload(latest?.structured_plan || null), [latest?.structured_plan]);
   const travelPlanView = useMemo(() => buildTravelPlanViewPayload(latest?.travel_plan_view || null), [latest?.travel_plan_view]);
@@ -77,7 +81,7 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
   const structuredPlanFingerprint = useMemo(() => JSON.stringify(structuredPlan || {}), [structuredPlan]);
   const travelPlanViewFingerprint = useMemo(() => JSON.stringify(travelPlanView || {}), [travelPlanView]);
   const itineraryFingerprint = useMemo(() => JSON.stringify(itineraryPayload), [itineraryPayload]);
-  const normalizedFocusName = useMemo(() => normalizePointText(focus?.pointName || ""), [focus?.pointName]);
+  const normalizedFocusName = useMemo(() => normalizePointText(localFocusName || focus?.pointName || ""), [focus?.pointName, localFocusName]);
 
   const cacheKey = useMemo(
     () =>
@@ -133,6 +137,10 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
   const focusedDisplayPoint = useMemo(
     () => displayPoints.find((point) => pointMatchesFocus(point, normalizedFocusName)) || null,
     [displayPoints, normalizedFocusName],
+  );
+  const focusSummaryPoint = useMemo(
+    () => focusedDisplayPoint || (selectedRouteLeg ? displayPoints.find((point) => point.name === selectedRouteLeg.origin.name) || selectedRouteLeg.origin : null),
+    [displayPoints, focusedDisplayPoint, selectedRouteLeg],
   );
 
   const mergedPoiCount = useMemo(
@@ -199,6 +207,7 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
   useEffect(() => {
     if (!focus?.nonce) return;
     setPointMode("main");
+    setLocalFocusName(focus.pointName || null);
     if (typeof focus.day === "number") {
       setSelectedDay(focus.day);
       return;
@@ -210,6 +219,14 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
     }
     setSelectedDay("all");
   }, [focus?.day, focus?.nonce, normalizedFocusName, sourcePoints]);
+
+  useEffect(() => {
+    if (!onFocusChange) return;
+    onFocusChange({
+      day: selectedDay === "all" ? undefined : selectedDay,
+      pointName: localFocusName || null,
+    });
+  }, [localFocusName, onFocusChange, selectedDay]);
 
   useEffect(() => {
     if (!displayRoutes.length) {
@@ -225,6 +242,18 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
     if (!focusedDisplayPoint) return;
     poiCardRefs.current[buildPointDomKey(focusedDisplayPoint)]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [focusedDisplayPoint]);
+
+  useEffect(() => {
+    if (!focusedDisplayPoint) return;
+    const matchedLeg = displayRoutes.find((leg) => leg.origin.name === focusedDisplayPoint.name || leg.destination.name === focusedDisplayPoint.name);
+    if (matchedLeg) {
+      setSelectedRouteIndex(matchedLeg.index);
+    }
+  }, [displayRoutes, focusedDisplayPoint]);
+
+  useEffect(() => {
+    setShareCopied(false);
+  }, [localFocusName, pointMode, selectedDay]);
 
   useEffect(() => {
     if (!useRealAmap || !mapRef.current || !mapData?.points.length || !window.AMap) return;
@@ -379,6 +408,49 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
     ].join("\n"));
   }
 
+  function handleSelectPoint(point: AiMapPoint) {
+    setPointMode("main");
+    setLocalFocusName(point.name);
+    if (typeof point.day === "number") {
+      setSelectedDay(point.day);
+    }
+  }
+
+  function buildShareLink() {
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", "map");
+    if (selectedDay === "all") {
+      url.searchParams.delete("map_day");
+    } else {
+      url.searchParams.set("map_day", String(selectedDay));
+    }
+    if (localFocusName) {
+      url.searchParams.set("map_point", localFocusName);
+    } else {
+      url.searchParams.delete("map_point");
+    }
+    return `${url.pathname}${url.search}${url.hash}`;
+  }
+
+  async function copyShareLink() {
+    const link = buildShareLink();
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(`${window.location.origin}${link}`);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = `${window.location.origin}${link}`;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setShareCopied(true);
+    } catch {
+      setShareCopied(false);
+    }
+  }
+
   return (
     <div className="view-frame ai-map-page">
       <section className="page-band ai-map-hero">
@@ -391,6 +463,10 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
           <p>自动抽取当前 AI 方案里的景点、街区、车站与餐饮线索，使用高德 POI 坐标在独立地图中展示。</p>
         </div>
         <div className="ai-map-hero-actions">
+          <button type="button" className="secondary-action" onClick={() => void copyShareLink()} disabled={!mapData?.points.length}>
+            <Copy size={15} />
+            {shareCopied ? "已复制定位链接" : "复制定位链接"}
+          </button>
           <button type="button" className="secondary-action" onClick={() => void rebuildMap({ force: true })} disabled={loading || !hasPlanData}>
             <RefreshCw size={15} className={loading ? "spin" : ""} />
             重新生成地图
@@ -429,7 +505,15 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
                   全部
                 </button>
                 {days.map((day) => (
-                  <button type="button" className={selectedDay === day ? "active" : ""} onClick={() => setSelectedDay(day)} key={day}>
+                  <button
+                    type="button"
+                    className={selectedDay === day ? "active" : ""}
+                    onClick={() => {
+                      setSelectedDay(day);
+                      setLocalFocusName(null);
+                    }}
+                    key={day}
+                  >
                     Day {day}
                   </button>
                 ))}
@@ -469,7 +553,14 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
                   <div className="ai-map-day-route-meta">
                     <label>{formatMeters(item.totalDistance)}</label>
                     <label>{formatMinutes(item.totalDuration)}</label>
-                    <button type="button" className="travel-inline-action subtle" onClick={() => setSelectedDay(item.day)}>
+                    <button
+                      type="button"
+                      className="travel-inline-action subtle"
+                      onClick={() => {
+                        setSelectedDay(item.day);
+                        setLocalFocusName(null);
+                      }}
+                    >
                       查看当天
                     </button>
                     <button type="button" className="travel-inline-action subtle" onClick={() => sendDayRouteToAgent(item.day)}>
@@ -497,6 +588,38 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
             <MapStat label="耗时" value={formatMinutes(mapData?.total_duration_minutes || 0)} />
           </div>
 
+          {focusSummaryPoint ? (
+            <section className="ai-map-focus-card" aria-label="当前聚焦地点">
+              <div className="ai-map-section-head">
+                <LocateFixed size={15} />
+                <strong>当前聚焦地点</strong>
+              </div>
+              <div className="ai-map-focus-copy">
+                <strong>{focusSummaryPoint.name}</strong>
+                <p>{focusSummaryPoint.address || focusSummaryPoint.district || focusSummaryPoint.city || "地址待确认"}</p>
+                <span>
+                  {typeof focusSummaryPoint.day === "number" ? `Day ${focusSummaryPoint.day}` : "全局主线"}
+                  {focusSummaryPoint.type ? ` · ${focusSummaryPoint.type}` : ""}
+                  {typeof focusSummaryPoint.confidence === "number" ? ` · 置信度 ${Math.round(focusSummaryPoint.confidence * 100)}%` : ""}
+                </span>
+              </div>
+              <div className="ai-map-focus-actions">
+                <button type="button" className="travel-inline-action subtle" onClick={() => handleSelectPoint(focusSummaryPoint)}>
+                  <LocateFixed size={14} />
+                  高亮定位
+                </button>
+                <button type="button" className="travel-inline-action subtle" onClick={() => void copyShareLink()}>
+                  <Copy size={14} />
+                  复制链接
+                </button>
+                <button type="button" className="travel-inline-action subtle" onClick={() => sendToAgent()}>
+                  <SendHorizonal size={14} />
+                  回写智能体
+                </button>
+              </div>
+            </section>
+          ) : null}
+
           <section className="ai-map-poi-list" aria-label="地图地点列表">
             <div className="ai-map-section-head">
               <LocateFixed size={15} />
@@ -506,6 +629,15 @@ export function AiMapWorkbench({ latest, messages, onPrompt, focus }: AiMapWorkb
               <article
                 className={`ai-map-poi-card ${pointMatchesFocus(point, normalizedFocusName) ? "is-focused" : ""}`}
                 key={`${point.name}-${index}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => handleSelectPoint(point)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    handleSelectPoint(point);
+                  }
+                }}
                 ref={(element) => {
                   poiCardRefs.current[buildPointDomKey(point)] = element;
                 }}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import axios from "axios";
 import {
   Activity,
@@ -160,6 +160,20 @@ function getInitialWorkspaceView() {
   return isWorkspaceView(view) ? view : "overview";
 }
 
+function getInitialMapWorkbenchFocus(): MapWorkbenchFocus | null {
+  const params = new URLSearchParams(window.location.search);
+  const dayValue = params.get("map_day");
+  const pointName = params.get("map_point");
+  const parsedDay = dayValue ? Number(dayValue) : null;
+  const hasDay = typeof parsedDay === "number" && Number.isFinite(parsedDay) && parsedDay > 0;
+  if (!hasDay && !pointName) return null;
+  return {
+    day: hasDay ? parsedDay : undefined,
+    pointName: pointName || null,
+    nonce: Date.now(),
+  };
+}
+
 function resolveWorkspaceHeading(view: WorkspaceView) {
   const mapping: Record<WorkspaceView, string> = {
     overview: "旅行决策总览",
@@ -233,7 +247,7 @@ export default function App() {
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(getInitialWorkspaceView);
   const [railwayWorkspaceDraft, setRailwayWorkspaceDraft] = useState<RailwayWorkspaceDraft | null>(null);
   const [guideRailwayResult, setGuideRailwayResult] = useState<GuideRailwayWorkspaceResult | null>(null);
-  const [mapWorkbenchFocus, setMapWorkbenchFocus] = useState<MapWorkbenchFocus | null>(null);
+  const [mapWorkbenchFocus, setMapWorkbenchFocus] = useState<MapWorkbenchFocus | null>(getInitialMapWorkbenchFocus);
   const [railwayQuerySeed, setRailwayQuerySeed] = useState<RailwayQuerySeed | null>(null);
   const [railwayLiveResult, setRailwayLiveResult] = useState<RailwayQueryResult | null>(null);
   const [decisionModuleStates, setDecisionModuleStates] = useState<Record<string, DecisionModuleState>>({});
@@ -327,8 +341,23 @@ export default function App() {
     } else {
       url.searchParams.set("view", workspaceView);
     }
+    if (workspaceView === "map" && mapWorkbenchFocus) {
+      if (typeof mapWorkbenchFocus.day === "number" && Number.isFinite(mapWorkbenchFocus.day)) {
+        url.searchParams.set("map_day", String(mapWorkbenchFocus.day));
+      } else {
+        url.searchParams.delete("map_day");
+      }
+      if (mapWorkbenchFocus.pointName) {
+        url.searchParams.set("map_point", mapWorkbenchFocus.pointName);
+      } else {
+        url.searchParams.delete("map_point");
+      }
+    } else {
+      url.searchParams.delete("map_day");
+      url.searchParams.delete("map_point");
+    }
     window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
-  }, [shareId, workspaceView]);
+  }, [mapWorkbenchFocus, shareId, workspaceView]);
 
   async function bootstrapApp() {
     await Promise.allSettled([
@@ -1041,6 +1070,23 @@ export default function App() {
     setWorkspaceView("map");
   }
 
+  const handleMapFocusSync = useCallback((nextFocus: { day?: number; pointName?: string | null } | null) => {
+    setMapWorkbenchFocus((current) => {
+      const nextDay = nextFocus?.day;
+      const nextPointName = nextFocus?.pointName || null;
+      if (!current && !nextFocus) return current;
+      if ((current?.day || undefined) === nextDay && (current?.pointName || null) === nextPointName) {
+        return current;
+      }
+      if (!nextFocus) return null;
+      return {
+        day: nextDay,
+        pointName: nextPointName,
+        nonce: current?.nonce || Date.now(),
+      };
+    });
+  }, []);
+
   async function handleRunRailwaySeedQuery(seed: RailwayQuerySeed) {
     const normalizedSeed = {
       ...seed,
@@ -1461,6 +1507,7 @@ export default function App() {
             messages={messages}
             onPrompt={(prompt) => void handlePrompt(prompt)}
             focus={mapWorkbenchFocus}
+            onFocusChange={handleMapFocusSync}
           />
         ) : null}
 
