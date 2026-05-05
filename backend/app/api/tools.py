@@ -29,6 +29,7 @@ AI_MAP_MAX_POINTS = 10
 AI_MAP_CONCURRENCY = 3
 AI_MAP_LLM_MAX_POINTS = 8
 AI_MAP_MIN_POI_SCORE = 10.0
+AI_MAP_MAIN_POINT_LIMIT = 8
 
 PLACE_SUFFIX_PATTERN = re.compile(
     r"(?:海上世界|世界之窗|欢乐海岸|东门老街|华强北商业区|海岸城|购物公园|万象天地|COCO\s*Park|OCT-LOFT|[\u4e00-\u9fa5A-Za-z0-9路]{2,32}(?:博物馆|美术馆|纪念馆|公园|景区|古镇|古城|寺|庙|塔|湾|山|园|街|巷|桥|码头|广场|夜市|市场|商圈|商业区|文化园|车站|机场|火车站|高铁站|步行街|创意园|书店|书城|乐园|天地))"
@@ -69,6 +70,10 @@ AI_MAP_BUDGET_PATTERN = re.compile(r"\d+\s*[-~到至]\s*\d+\s*元|\d+\s*元")
 AI_MAP_TRANSIT_NOISE_PATTERN = re.compile(r"(地铁\d+号线|\d+号线|[A-Z]?\d+出口|步行\d+分钟|打车\d+分钟|约\d+分钟)")
 AI_MAP_NON_POI_PREFIX_PATTERN = re.compile(r"^(推荐|亮点|预算|提示|交通|门票|地址|日期|节奏|选项[A-Z]|⚠️)")
 AI_MAP_GENERIC_PLACE_NAME_PATTERN = re.compile(r"^(历史街区|历史街|海岸线|海岸线漫步|古城|古镇|商业区|街区|夜景|文艺漫游|城市探索)$")
+AI_MAP_MAIN_POI_SUFFIX_PATTERN = re.compile(
+    r"(?:山顶广场|山顶|广场[A-Z]?[区馆座]?|风筝广场|雕像|游客中心|船头广场|观景平台|东门店|广场店|入口|出口|停车场)$"
+)
+AI_MAP_MAIN_POI_NOISE_PATTERN = re.compile(r"(?:地铁站|公交站|交叉口|出入口|停车场|检票口|进站口)")
 
 
 @router.post("/tools/weather")
@@ -140,9 +145,10 @@ async def ai_map_workbench(payload: AiMapWorkbenchRequest):
                 for candidate in candidates[: AI_MAP_MAX_POINTS * 2]
             ]
         )
-        points = [item for item in points if item.get("name")]
-        points = _filter_resolved_points(points, payload.city, service.configured())
-        points = points[:AI_MAP_MAX_POINTS]
+        raw_points = [item for item in points if item.get("name")]
+        raw_points = _filter_resolved_points(raw_points, payload.city, service.configured())
+        main_points = _normalize_ai_map_points(raw_points, payload)
+        points = main_points[:AI_MAP_MAIN_POINT_LIMIT]
 
         routes: list[dict[str, Any]] = []
         if len(points) > 1:
@@ -166,14 +172,16 @@ async def ai_map_workbench(payload: AiMapWorkbenchRequest):
                 "city": payload.city,
                 "mode": payload.mode,
                 "points": points,
+                "raw_points": raw_points[:AI_MAP_MAX_POINTS],
                 "routes": routes,
                 "total_distance_meters": sum(item.get("distance_meters") or 0 for item in routes),
                 "total_duration_minutes": sum(item.get("duration_minutes") or 0 for item in routes),
-                "fallback": any(item.get("fallback") for item in [*points, *routes]),
+                "fallback": any(item.get("fallback") for item in [*raw_points, *routes]),
                 "source": "ai_response",
                 "diagnostics": {
                     "candidate_count": len(candidates),
-                    "resolved_count": len(points),
+                    "resolved_count": len(raw_points),
+                    "main_point_count": len(points),
                     "has_js_key": bool(settings.amap_js_api_key or settings.amap_api_key),
                     "web_service_configured": service.configured(),
                 },
@@ -223,12 +231,77 @@ async def web_search_ping(db: Session = Depends(get_db)):
 
 async def _build_ai_map_candidates(payload: AiMapWorkbenchRequest) -> list[dict[str, Any]]:
     """中文注释：优先信任结构化行程，再用大模型和规则补足，彻底降低地图与回答脱节的概率。"""
+    render_candidates = _extract_render_plan_map_candidates(payload)
+    if len(render_candidates) >= 3:
+        return _dedupe_ai_map_candidates(render_candidates)[: AI_MAP_MAX_POINTS * 2]
     structured_candidates = _extract_structured_map_candidates(payload)
     if len(structured_candidates) >= 4:
         return _dedupe_ai_map_candidates(structured_candidates)[: AI_MAP_MAX_POINTS * 2]
     llm_candidates = await _extract_ai_map_candidates_with_llm(payload)
     rule_candidates = _extract_ai_map_candidates(payload)
-    return _merge_ai_map_candidates([*structured_candidates, *rule_candidates], llm_candidates)[: AI_MAP_MAX_POINTS * 2]
+    return _merge_ai_map_candidates([*render_candidates, *structured_candidates, *rule_candidates], llm_candidates)[
+        : AI_MAP_MAX_POINTS * 2
+    ]
+
+
+def _extract_render_plan_map_candidates(payload: AiMapWorkbenchRequest) -> list[dict[str, Any]]:
+    """中文注释：优先读取页面渲染层已经整理好的地点顺序，降低地图与攻略正文脱节的概率。"""
+    view = payload.travel_plan_view
+    if not view:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    order = 0
+
+    if view.map_schedule and view.map_schedule.markers:
+        for marker in view.map_schedule.markers:
+            name = str(marker.title or "").strip()
+            if not name:
+                continue
+            candidates.append(
+                {
+                    "name": name,
+                    "day": marker.day,
+                    "source": "travel_plan_view",
+                    "priority": 210,
+                    "order": order,
+                }
+            )
+            order += 1
+
+    if candidates:
+        return _dedupe_ai_map_candidates(candidates)
+
+    for day in view.days:
+        for point in day.route_points:
+            name = str(point or "").strip()
+            if not name:
+                continue
+            candidates.append(
+                {
+                    "name": name,
+                    "day": day.day,
+                    "source": "travel_plan_route_points",
+                    "priority": 170,
+                    "order": order,
+                }
+            )
+            order += 1
+        for poi in day.pois:
+            name = str(poi.name or "").strip()
+            if not name:
+                continue
+            candidates.append(
+                {
+                    "name": name,
+                    "day": day.day,
+                    "source": "travel_plan_poi",
+                    "priority": 160,
+                    "order": order,
+                }
+            )
+            order += 1
+    return _dedupe_ai_map_candidates(candidates)
 
 
 def _extract_structured_map_candidates(payload: AiMapWorkbenchRequest) -> list[dict[str, Any]]:
@@ -403,6 +476,121 @@ def _dedupe_ai_map_candidates(candidates: list[dict[str, Any]]) -> list[dict[str
     return unique
 
 
+def _normalize_ai_map_points(points: list[dict[str, Any]], payload: AiMapWorkbenchRequest) -> list[dict[str, Any]]:
+    """中文注释：把子点、分区和重复 POI 归并成更适合展示与路线规划的主景点。"""
+    if not points:
+        return []
+
+    anchor_names = _build_structured_anchor_names(payload)
+    grouped: dict[tuple[int | None, str], list[dict[str, Any]]] = {}
+    for point in points:
+        canonical_name = _canonicalize_point_name(point, anchor_names)
+        group_key = (point.get("day"), _normalize_name_for_compare(canonical_name))
+        grouped.setdefault(group_key, []).append({**point, "canonical_name": canonical_name})
+
+    merged_points: list[dict[str, Any]] = []
+    for (_day, _canonical_key), group in grouped.items():
+        merged_points.append(_merge_ai_map_point_group(group))
+
+    merged_points.sort(
+        key=lambda item: (
+            int(item.get("day") or 999),
+            int(item.get("candidate_order") or 0),
+            -float(item.get("score") or 0),
+        )
+    )
+    return merged_points[:AI_MAP_MAIN_POINT_LIMIT]
+
+
+def _build_structured_anchor_names(payload: AiMapWorkbenchRequest) -> list[str]:
+    plan = payload.structured_plan
+    if not plan or not plan.days:
+        return []
+    anchors: list[str] = []
+    for day in plan.days:
+        for place in day.places:
+            name = _normalize_main_poi_name(str(place.name or ""))
+            if name and name not in anchors:
+                anchors.append(name)
+    return anchors[:24]
+
+
+def _canonicalize_point_name(point: dict[str, Any], anchor_names: list[str]) -> str:
+    query_name = _clean_place_name(str(point.get("query") or ""))
+    point_name = _clean_place_name(str(point.get("name") or ""))
+    if anchor_names:
+        anchor_match = _match_anchor_name(query_name or point_name, point_name, anchor_names)
+        if anchor_match:
+            return anchor_match
+
+    for base_name in [query_name, point_name]:
+        normalized = _normalize_main_poi_name(base_name)
+        if normalized and not _looks_like_travel_advice(normalized):
+            return normalized
+    return query_name or point_name
+
+
+def _match_anchor_name(query_name: str, point_name: str, anchor_names: list[str]) -> str | None:
+    query_core = _normalize_name_for_compare(query_name)
+    point_core = _normalize_name_for_compare(point_name)
+    for anchor in anchor_names:
+        anchor_core = _normalize_name_for_compare(anchor)
+        if not anchor_core:
+            continue
+        if query_core and (query_core == anchor_core or query_core in anchor_core or anchor_core in query_core):
+            return anchor
+        if point_core and (point_core == anchor_core or point_core.startswith(anchor_core) or anchor_core in point_core):
+            return anchor
+    return None
+
+
+def _normalize_main_poi_name(name: str) -> str:
+    text = _clean_place_name(name)
+    if not text:
+        return ""
+    text = re.sub(r"[（(].*?[）)]", "", text).strip()
+    text = AI_MAP_MAIN_POI_SUFFIX_PATTERN.sub("", text).strip()
+    text = re.sub(r"(?:深圳|上海|北京|广州|杭州|苏州|成都|重庆|南京|西安|长沙|武汉)(?:[一-龥]{0,6})店$", "", text).strip()
+    text = re.sub(r"(?:广场店|旗舰店|总店|门店)$", "", text).strip()
+    text = re.sub(r"(美食城|美食街|步行街|商圈|广场)(?:[一-龥]{1,8})$", r"\1", text).strip()
+    text = re.sub(r"(深圳|上海|北京|广州|杭州|苏州|成都|重庆|南京|西安|长沙|武汉)$", "", text).strip()
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text[:40]
+
+
+def _merge_ai_map_point_group(group: list[dict[str, Any]]) -> dict[str, Any]:
+    sorted_group = sorted(group, key=_point_group_sort_key)
+    anchor = {**sorted_group[0]}
+    merged_names: list[str] = []
+    for item in sorted_group:
+        name = str(item.get("name") or "").strip()
+        if name and name not in merged_names:
+            merged_names.append(name)
+
+    anchor["name"] = anchor.get("canonical_name") or anchor.get("name")
+    anchor["merged_names"] = merged_names
+    anchor["group_size"] = len(merged_names)
+    anchor["is_anchor"] = True
+    anchor["normalized_reason"] = "grouped_sub_pois" if len(merged_names) > 1 else "single_poi"
+    return anchor
+
+
+def _point_group_sort_key(point: dict[str, Any]) -> tuple[float, float, int]:
+    score = float(point.get("score") or 0)
+    poi_type = str(point.get("type") or "")
+    name = str(point.get("name") or "")
+    quality = 0.0
+    if any(word in poi_type for word in ["风景名胜", "公园", "步行街", "博物馆", "古城", "古镇", "特色商业街"]):
+        quality += 3.2
+    if any(word in name for word in ["公园", "海上世界", "步行街", "古城", "博物馆", "创意园", "商圈"]):
+        quality += 2.1
+    if AI_MAP_MAIN_POI_NOISE_PATTERN.search(name):
+        quality -= 6.5
+    if AI_MAP_MAIN_POI_SUFFIX_PATTERN.search(name):
+        quality -= 1.8
+    return (-(score + quality), -float(point.get("candidate_priority") or 0), int(point.get("candidate_order") or 0))
+
+
 def _filter_resolved_points(points: list[dict[str, Any]], city: str | None, configured: bool) -> list[dict[str, Any]]:
     """中文注释：再做一次结果级过滤，避免把明显错误的地点带到地图工作台。"""
     filtered: list[dict[str, Any]] = []
@@ -470,6 +658,8 @@ async def _resolve_ai_map_point(
         "query": query,
         "day": candidate.get("day"),
         "source": candidate.get("source"),
+        "candidate_order": int(candidate.get("order") or 0),
+        "candidate_priority": int(candidate.get("priority") or 0),
         "city": poi.get("city") or city,
         "district": poi.get("district"),
         "address": poi.get("address"),

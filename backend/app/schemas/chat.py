@@ -66,6 +66,95 @@ class StructuredTravelPlan(BaseModel):
     days: list[StructuredPlanDay] = Field(default_factory=list)
 
 
+class TravelPlanOverview(BaseModel):
+    """中文注释：攻略详情页顶部总览模块。"""
+
+    title: str = Field(default="", max_length=120)
+    summary: str = Field(default="", max_length=400)
+    highlights: list[str] = Field(default_factory=list)
+
+
+class TravelPlanMapMarker(BaseModel):
+    """中文注释：地图工作台和攻略详情页共用的地点锚点。"""
+
+    day: int = Field(ge=1, le=30)
+    order: int | None = Field(default=None, ge=1, le=20)
+    title: str = Field(default="", max_length=80)
+    address: str = Field(default="", max_length=160)
+    intro: str = Field(default="", max_length=240)
+
+
+class TravelPlanMapSchedule(BaseModel):
+    """中文注释：页面渲染层消费的轻量地图计划。"""
+
+    city: str | None = Field(default=None, max_length=80)
+    title: str = Field(default="", max_length=120)
+    markers: list[TravelPlanMapMarker] = Field(default_factory=list)
+
+
+class TravelPlanPoiCard(BaseModel):
+    """中文注释：前端按地点渲染的景点卡片数据。"""
+
+    name: str = Field(default="", max_length=80)
+    intro: str = Field(default="", max_length=240)
+    category: str | None = Field(default=None, max_length=40)
+    stay_text: str = Field(default="", max_length=60)
+    transport_hint: str = Field(default="", max_length=120)
+    tags: list[str] = Field(default_factory=list)
+    order: int | None = Field(default=None, ge=1, le=20)
+
+
+class TravelPlanDayView(BaseModel):
+    """中文注释：攻略详情页的单日视图模型。"""
+
+    day: int = Field(ge=1, le=30)
+    title: str = Field(default="", max_length=120)
+    summary: str = Field(default="", max_length=240)
+    strategy: str = Field(default="", max_length=240)
+    route_digest: str = Field(default="", max_length=240)
+    route_points: list[str] = Field(default_factory=list)
+    transit_hint: str = Field(default="", max_length=160)
+    agenda: list[StructuredAgendaItem] = Field(default_factory=list)
+    pois: list[TravelPlanPoiCard] = Field(default_factory=list)
+
+
+class TravelPlanBudgetItem(BaseModel):
+    """中文注释：预算卡片中的单项条目。"""
+
+    name: str = Field(default="", max_length=40)
+    amount: str = Field(default="", max_length=60)
+    note: str = Field(default="", max_length=120)
+    ratio: float | None = Field(default=None, ge=0, le=1)
+
+
+class TravelPlanBudgetView(BaseModel):
+    """中文注释：攻略详情页预算模块。"""
+
+    summary: str = Field(default="", max_length=240)
+    total_hint: str = Field(default="", max_length=80)
+    items: list[TravelPlanBudgetItem] = Field(default_factory=list)
+
+
+class TravelPlanSupplement(BaseModel):
+    """中文注释：补充信息模块，承载雨天、风险、玩法等补充提示。"""
+
+    title: str = Field(default="", max_length=60)
+    summary: str = Field(default="", max_length=240)
+    bullets: list[str] = Field(default_factory=list)
+    tone: str = Field(default="info", max_length=20)
+
+
+class TravelPlanView(BaseModel):
+    """中文注释：给前端详情页使用的页面级攻略渲染数据。"""
+
+    overview: TravelPlanOverview
+    map_schedule: TravelPlanMapSchedule | None = None
+    days: list[TravelPlanDayView] = Field(default_factory=list)
+    budget: TravelPlanBudgetView | None = None
+    supplements: list[TravelPlanSupplement] = Field(default_factory=list)
+    action_hints: list[str] = Field(default_factory=list)
+
+
 class DecisionModule(BaseModel):
     """前端决策工作台模块，用于把长文本规划拆成可视化判断。"""
 
@@ -86,6 +175,7 @@ class ChatResponse(BaseModel):
     cards: list[ResultCard] = Field(default_factory=list)
     itinerary: list[ItineraryBlock] | None = None
     structured_plan: StructuredTravelPlan | None = None
+    travel_plan_view: TravelPlanView | None = None
     tool_calls: list[ToolCallView] = Field(default_factory=list)
     sources: list[SourceRef] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

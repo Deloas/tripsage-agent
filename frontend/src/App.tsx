@@ -125,6 +125,22 @@ type GuideRailwayWorkspaceResult = {
   };
   result: RailwayQueryResult;
 };
+
+type MapWorkbenchFocus = {
+  day?: number;
+  pointName?: string | null;
+  nonce: number;
+};
+
+type RailwayQuerySeed = {
+  origin: string;
+  destination: string;
+  date: string;
+  hint?: string | null;
+  source?: string | null;
+  nonce: number;
+};
+
 type GuideSelectionRequest = {
   guideId: number;
   detailMode: "preview" | "edit";
@@ -217,6 +233,9 @@ export default function App() {
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(getInitialWorkspaceView);
   const [railwayWorkspaceDraft, setRailwayWorkspaceDraft] = useState<RailwayWorkspaceDraft | null>(null);
   const [guideRailwayResult, setGuideRailwayResult] = useState<GuideRailwayWorkspaceResult | null>(null);
+  const [mapWorkbenchFocus, setMapWorkbenchFocus] = useState<MapWorkbenchFocus | null>(null);
+  const [railwayQuerySeed, setRailwayQuerySeed] = useState<RailwayQuerySeed | null>(null);
+  const [railwayLiveResult, setRailwayLiveResult] = useState<RailwayQueryResult | null>(null);
   const [decisionModuleStates, setDecisionModuleStates] = useState<Record<string, DecisionModuleState>>({});
   const [referencedGuide, setReferencedGuide] = useState<GuideDetail | null>(null);
   const [guideSelectionRequest, setGuideSelectionRequest] = useState<GuideSelectionRequest | null>(null);
@@ -232,10 +251,11 @@ export default function App() {
     () => (guestCarryoverDraft ? buildGuestCarryoverSummary(guestCarryoverDraft) : null),
     [guestCarryoverDraft],
   );
-  const railwayPageLatest = useMemo(
-    () => (guideRailwayResult ? buildGuideRailwayChatResponse(guideRailwayResult) : latest),
-    [guideRailwayResult, latest],
-  );
+  const railwayPageLatest = useMemo(() => {
+    if (guideRailwayResult) return buildGuideRailwayChatResponse(guideRailwayResult);
+    if (railwayLiveResult) return buildRailwaySeedChatResponse(railwayLiveResult, railwayQuerySeed, latest);
+    return latest;
+  }, [guideRailwayResult, latest, railwayLiveResult, railwayQuerySeed]);
 
   if (shareId) {
     return <SharedPlanPage shareId={shareId} />;
@@ -716,6 +736,10 @@ export default function App() {
     setShareUrl(null);
     setStreamStages([]);
     setRailwayWorkspaceDraft(null);
+    setGuideRailwayResult(null);
+    setRailwayLiveResult(null);
+    setRailwayQuerySeed(null);
+    setMapWorkbenchFocus(null);
     setDecisionModuleStates({});
     setReferencedGuide(null);
     setGuideSelectionRequest(null);
@@ -742,6 +766,10 @@ export default function App() {
     setShareUrl(null);
     setStreamStages([]);
     setRailwayWorkspaceDraft(null);
+    setGuideRailwayResult(null);
+    setRailwayLiveResult(null);
+    setRailwayQuerySeed(null);
+    setMapWorkbenchFocus(null);
     setDecisionModuleStates({});
     setReferencedGuide(null);
     setGuideSelectionRequest(null);
@@ -978,16 +1006,76 @@ export default function App() {
     guide: GuideDetail,
     payload: { origin: string; destination: string; date: string },
   ): Promise<RailwayQueryResult> {
-    const result = await queryRailway(payload);
+    const normalizedDate = normalizeRailwaySeedDate(payload.date);
+    const result = await queryRailway({
+      ...payload,
+      date: normalizedDate,
+    });
+    setRailwayLiveResult(null);
+    setRailwayQuerySeed({
+      origin: payload.origin,
+      destination: payload.destination,
+      date: normalizedDate,
+      hint: `已从《${guide.title}》带入铁路查询条件`,
+      source: "guide_route_preview",
+      nonce: Date.now(),
+    });
     setGuideRailwayResult({
       guide,
-      query: payload,
+      query: { ...payload, date: normalizedDate },
       result,
     });
     setRailwayWorkspaceDraft(null);
     setModalOpen(false);
     setWorkspaceView("railway");
     return result;
+  }
+
+  function handleOpenMapFromTravelPlan(payload: { day?: number; pointName?: string | null }) {
+    // 中文注释：从攻略详情卡直接打开地图工作台时，保留分日与单点聚焦信息，避免用户重复操作。
+    setMapWorkbenchFocus({
+      day: payload.day,
+      pointName: payload.pointName || null,
+      nonce: Date.now(),
+    });
+    setWorkspaceView("map");
+  }
+
+  async function handleRunRailwaySeedQuery(seed: RailwayQuerySeed) {
+    const normalizedSeed = {
+      ...seed,
+      date: normalizeRailwaySeedDate(seed.date),
+    };
+    const result = await queryRailway({
+      origin: normalizedSeed.origin,
+      destination: normalizedSeed.destination,
+      date: normalizedSeed.date,
+    });
+    setGuideRailwayResult(null);
+    setRailwayLiveResult(result);
+    setRailwayQuerySeed(normalizedSeed);
+    setWorkspaceView("railway");
+    return result;
+  }
+
+  function handleOpenRailwayFromTravelPlan(payload: { destination?: string | null; date?: string | null; hint?: string | null }) {
+    const destination = payload.destination || extractDestination(latest, planVersions) || latest?.structured_plan?.city || "";
+    const origin = inferOriginCity(messages, currentUser);
+    const date = normalizeRailwaySeedDate(payload.date || inferRailwayDateFromMessages(messages) || "周末");
+    const seed: RailwayQuerySeed = {
+      origin,
+      destination,
+      date,
+      hint: payload.hint || null,
+      source: "travel_plan_view",
+      nonce: Date.now(),
+    };
+    setGuideRailwayResult(null);
+    setRailwayQuerySeed(seed);
+    setWorkspaceView("railway");
+    if (seed.origin && seed.destination && seed.date) {
+      void handleRunRailwaySeedQuery(seed).catch(() => undefined);
+    }
   }
 
   function registerPlanVersion(response: ChatResponse, context: Record<string, unknown>) {
@@ -1293,6 +1381,8 @@ export default function App() {
               onOpenEvidence={() => setInsightOpen(true)}
               onOpenUserCenter={() => setUserOpen(true)}
               onJump={setWorkspaceView}
+              onOpenMapFromPlan={handleOpenMapFromTravelPlan}
+              onOpenRailwayFromPlan={handleOpenRailwayFromTravelPlan}
               onApplyRailwayDraft={handleApplyRailwayWorkspaceDraft}
               onClearReferencedGuide={handleClearReferencedGuide}
               onOpenReferencedGuide={handleOpenReferencedGuide}
@@ -1370,6 +1460,7 @@ export default function App() {
             latest={latest}
             messages={messages}
             onPrompt={(prompt) => void handlePrompt(prompt)}
+            focus={mapWorkbenchFocus}
           />
         ) : null}
 
@@ -1379,6 +1470,8 @@ export default function App() {
             onAdoptTrain={(prompt) => void handlePrompt(prompt)}
             onWorkspaceSync={handleRailwayWorkspaceSync}
             onSyncToPlanning={handleApplyRailwayWorkspaceDraft}
+            seed={railwayQuerySeed}
+            onRunSeedQuery={(seedPayload) => void handleRunRailwaySeedQuery(seedPayload)}
           />
         ) : null}
 
@@ -1824,6 +1917,8 @@ function PlanningWorkbench({
   onOpenEvidence,
   onOpenUserCenter,
   onJump,
+  onOpenMapFromPlan,
+  onOpenRailwayFromPlan,
   onApplyRailwayDraft,
   onClearReferencedGuide,
   onOpenReferencedGuide,
@@ -1855,6 +1950,8 @@ function PlanningWorkbench({
   onOpenEvidence: () => void;
   onOpenUserCenter: () => void;
   onJump: (view: WorkspaceView) => void;
+  onOpenMapFromPlan: (payload: { day?: number; pointName?: string | null }) => void;
+  onOpenRailwayFromPlan: (payload: { destination?: string | null; date?: string | null; hint?: string | null }) => void;
   onApplyRailwayDraft: () => void;
   onClearReferencedGuide: () => void;
   onOpenReferencedGuide: (detailMode?: "preview" | "edit") => void;
@@ -1930,6 +2027,8 @@ function PlanningWorkbench({
           onOpenEvidence={onOpenEvidence}
           onOpenEvidenceWorkspace={() => onJump("evidence")}
           onOpenRailway={() => onJump("railway")}
+          onOpenMapFromPlan={onOpenMapFromPlan}
+          onOpenRailwayFromPlan={onOpenRailwayFromPlan}
           onOpenUserCenter={onOpenUserCenter}
           onClearReferencedGuide={onClearReferencedGuide}
           onOpenReferencedGuide={onOpenReferencedGuide}
@@ -2131,11 +2230,15 @@ function RailwayDecisionPage({
   onAdoptTrain,
   onWorkspaceSync,
   onSyncToPlanning,
+  seed,
+  onRunSeedQuery,
 }: {
   latest: ChatResponse | null;
   onAdoptTrain: (prompt: string) => void;
   onWorkspaceSync: (draft: RailwayWorkspaceDraft | null) => void;
   onSyncToPlanning: () => void;
+  seed: RailwayQuerySeed | null;
+  onRunSeedQuery: (seed: RailwayQuerySeed) => void;
 }) {
   const trains = getRailwayTrains(latest);
   const fastest = findFastestAppTrain(trains);
@@ -2180,6 +2283,11 @@ function RailwayDecisionPage({
   const filteredKeys = useMemo(() => sorted.map((train) => getAppTrainKey(train)), [sorted]);
   const compareRecommendation = useMemo(() => resolveAppPreferredTrain(compareTrains), [compareTrains]);
   const railDate = typeof railwayCard?.meta?.date === "string" ? railwayCard.meta.date : "日期待确认";
+  const [seedDraft, setSeedDraft] = useState<RailwayQuerySeed | null>(seed);
+
+  useEffect(() => {
+    setSeedDraft(seed);
+  }, [seed]);
 
   useEffect(() => {
     if (!compareTrains.length && !candidateTrains.length) {
@@ -2226,6 +2334,14 @@ function RailwayDecisionPage({
 
   function removeCandidate(key: string) {
     setCandidateKeys((current) => current.filter((item) => item !== key));
+  }
+
+  function runSeedQuery() {
+    if (!seedDraft?.origin || !seedDraft.destination || !seedDraft.date) return;
+    onRunSeedQuery({
+      ...seedDraft,
+      nonce: Date.now(),
+    });
   }
 
   return (
@@ -2275,6 +2391,46 @@ function RailwayDecisionPage({
           { label: "可回写", value: candidateTrains.length || compareTrains.length ? "已就绪" : "待形成" },
         ]}
       />
+
+      {seedDraft ? (
+        <section className="page-band railway-seed-band">
+          <div className="railway-seed-copy">
+            <div className="section-kicker">
+              <TrainFront size={15} />
+              攻略联动查询
+            </div>
+            <h3>把攻略里的目的地与日期直接带入 12306 工作台</h3>
+            <p>{seedDraft.hint || "你可以微调出发地、目的地和日期，再一键刷新完整车次池。"}</p>
+          </div>
+          <div className="railway-seed-form">
+            <label>
+              <span>出发地</span>
+              <input
+                value={seedDraft.origin}
+                onChange={(event) => setSeedDraft((current) => (current ? { ...current, origin: event.target.value } : current))}
+              />
+            </label>
+            <label>
+              <span>目的地</span>
+              <input
+                value={seedDraft.destination}
+                onChange={(event) => setSeedDraft((current) => (current ? { ...current, destination: event.target.value } : current))}
+              />
+            </label>
+            <label>
+              <span>日期</span>
+              <input
+                value={seedDraft.date}
+                onChange={(event) => setSeedDraft((current) => (current ? { ...current, date: event.target.value } : current))}
+              />
+            </label>
+            <button type="button" className="primary-action" onClick={runSeedQuery}>
+              <TrainFront size={15} />
+              查询车次
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <section className="page-band railway-control-band sticky-railway-control">
         <div className="railway-control-main">
@@ -3092,6 +3248,87 @@ function extractDestination(latest: ChatResponse | null, planVersions: PlanVersi
   return null;
 }
 
+function inferOriginCity(messages: Message[], currentUser: LocalUser | null): string {
+  const textPool = messages
+    .filter((item) => item.role === "user")
+    .slice()
+    .reverse()
+    .map((item) => item.content);
+  for (const text of textPool) {
+    const matched = text.match(/从([\u4e00-\u9fa5]{2,8})去/);
+    if (matched?.[1]) return matched[1];
+  }
+  return currentUser?.home_city?.trim() || "上海";
+}
+
+function inferRailwayDateFromMessages(messages: Message[]): string | null {
+  const textPool = messages
+    .filter((item) => item.role === "user")
+    .slice()
+    .reverse()
+    .map((item) => item.content);
+  for (const text of textPool) {
+    const matched = text.match(/\d{4}-\d{1,2}-\d{1,2}|\d{1,2}月\d{1,2}日|五一|十一|国庆|端午|中秋|周末/);
+    if (matched?.[0]) return matched[0];
+  }
+  return null;
+}
+
+function normalizeRailwaySeedDate(value: string | null | undefined): string {
+  const today = new Date();
+  const text = String(value || "").trim();
+
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(text)) {
+    const [year, month, day] = text.split("-").map(Number);
+    return formatRailwayDate(new Date(year, month - 1, day));
+  }
+  if (/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(text)) {
+    const [year, month, day] = text.split("/").map(Number);
+    return formatRailwayDate(new Date(year, month - 1, day));
+  }
+  if (text === "今天") return formatRailwayDate(today);
+  if (text === "明天") return formatRailwayDate(addRailwayDays(today, 1));
+  if (text === "后天") return formatRailwayDate(addRailwayDays(today, 2));
+  if (text.includes("周末")) return formatRailwayDate(nextRailwaySaturday(today));
+
+  const monthDay = text.match(/(\d{1,2})月(\d{1,2})日?/);
+  if (monthDay) {
+    const month = Number(monthDay[1]);
+    const day = Number(monthDay[2]);
+    const candidate = new Date(today.getFullYear(), month - 1, day);
+    if (candidate < stripRailwayTime(today)) {
+      candidate.setFullYear(candidate.getFullYear() + 1);
+    }
+    return formatRailwayDate(candidate);
+  }
+
+  return formatRailwayDate(addRailwayDays(today, 7));
+}
+
+function addRailwayDays(base: Date, days: number) {
+  const next = new Date(base);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function nextRailwaySaturday(base: Date) {
+  const next = stripRailwayTime(base);
+  const offset = (6 - next.getDay() + 7) % 7 || 7;
+  next.setDate(next.getDate() + offset);
+  return next;
+}
+
+function stripRailwayTime(base: Date) {
+  return new Date(base.getFullYear(), base.getMonth(), base.getDate());
+}
+
+function formatRailwayDate(base: Date) {
+  const year = base.getFullYear();
+  const month = String(base.getMonth() + 1).padStart(2, "0");
+  const day = String(base.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function extractStartDate(messages: Message[]): string | null {
   const patterns = [
     /\b\d{4}-\d{1,2}-\d{1,2}\b/,
@@ -3183,6 +3420,50 @@ function buildGuideRailwayChatResponse(payload: GuideRailwayWorkspaceResult): Ch
     ],
     warnings: payload.result.fallback ? [payload.result.notice || payload.result.reason || "铁路查询使用兜底数据，请以 12306 官方为准。"] : [],
     decision_modules: [],
+  };
+}
+
+function buildRailwaySeedChatResponse(
+  result: RailwayQueryResult,
+  seed: RailwayQuerySeed | null,
+  latest: ChatResponse | null,
+): ChatResponse {
+  const trainCount = result.trains?.length || 0;
+  const origin = result.origin || seed?.origin || "出发地";
+  const destination = result.destination || seed?.destination || extractDestination(latest, []);
+  const date = result.date || seed?.date || "日期待确认";
+  return {
+    conversation_id: latest?.conversation_id || `railway-seed-${Date.now()}`,
+    answer: `已按 ${origin} → ${destination}（${date}）生成 ${trainCount} 条铁路候选。`,
+    intent: "railway_query",
+    cards: [
+      {
+        type: "railway",
+        title: `${origin} → ${destination}`,
+        summary: seed?.hint || `已返回 ${trainCount} 条可筛选车次。`,
+        meta: {
+          provider: result.provider,
+          date,
+          trains: result.trains || [],
+          fallback: result.fallback || false,
+          notice: result.notice || result.reason,
+          source: seed?.source || "travel_plan_view",
+        },
+      },
+    ],
+    itinerary: latest?.itinerary || null,
+    structured_plan: latest?.structured_plan || null,
+    travel_plan_view: latest?.travel_plan_view || null,
+    tool_calls: [
+      {
+        tool_name: "12306_mcp_seed_query",
+        status: result.fallback ? "fallback" : "success",
+        output_summary: `${origin} 到 ${destination}，${trainCount} 条候选`,
+      },
+    ],
+    sources: latest?.sources || [],
+    warnings: result.fallback ? [result.notice || result.reason || "铁路查询使用兜底数据，请以 12306 官方为准。"] : [],
+    decision_modules: latest?.decision_modules || [],
   };
 }
 

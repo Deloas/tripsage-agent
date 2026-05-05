@@ -13,6 +13,15 @@ from app.schemas.chat import (
     StructuredPlaceBrief,
     StructuredPlanDay,
     StructuredTravelPlan,
+    TravelPlanBudgetItem,
+    TravelPlanBudgetView,
+    TravelPlanDayView,
+    TravelPlanMapMarker,
+    TravelPlanMapSchedule,
+    TravelPlanOverview,
+    TravelPlanPoiCard,
+    TravelPlanSupplement,
+    TravelPlanView,
 )
 from app.schemas.common import ResultCard, SourceRef, ToolCallView
 from app.services.amap_service import AmapService
@@ -48,6 +57,25 @@ SEED_KEYWORDS_BY_STYLE = {
     "文艺": ["创意园", "书店", "美术馆"],
     "亲子": ["主题乐园", "公园", "海洋馆"],
 }
+DESTINATION_CAPTURE_PATTERNS = [
+    re.compile(r"(?:鎯冲幓|鎯冲埌|鍑嗗鍘?|璁″垝鍘?|浠嶵[一-龥]{2,8}鍘?|鍘?|鍒?)\s*(?P<name>[一-龥]{2,8})(?:鐜?|鏃呮父|鏃呰|閫涢€?])?"),
+    re.compile(r"(?P<name>[一-龥]{2,8})(?:涓€澶╀竴澶?涓ゅぉ涓€澶?涓ゆ棩娓?涓夋棩娓?鍛ㄦ湯娓?citywalk|鏃呮父鏀荤暐|鏃呰鏀荤暐|娓哥帺鏀荤暐|鏀荤暐|鏃呰鏂规|琛岀▼瑙勫垝)"),
+]
+GENERIC_DESTINATION_TOKENS = {
+    "鎴戞兂",
+    "棰勭畻",
+    "楂橀搧",
+    "鐏溅",
+    "缇庨",
+    "澶滄櫙",
+    "鍘嗗彶",
+    "鏃呮父",
+    "鏃呰",
+    "鏀荤暐",
+    "鏂规",
+    "琛岀▼",
+}
+TIME_SLOT_CANDIDATES = ["鏃╀笂", "涓婂崍", "涓崍", "涓嬪崍", "鍌嶆櫄", "鏅氫笂", "澶滈噷"]
 
 
 def build_logger(state: TripAgentState) -> ToolLogger:
@@ -61,22 +89,22 @@ def build_logger(state: TripAgentState) -> ToolLogger:
 
 
 def infer_intent_by_rules(message: str) -> str:
-    """规则意图识别，保证模型不可用时也能工作。"""
-    if any(word in message for word in ["高铁", "火车", "车次", "余票", "12306"]):
+    """?????????????????????????????"""
+    if any(word in message for word in ["\u9ad8\u94c1", "12306", "\u5217\u8f66", "\u8f66\u6b21", "\u4f59\u7968", "\u706b\u8f66"]):
         return "railway_query"
-    if any(word in message for word in ["天气", "下雨", "温度", "冷吗", "热吗"]):
+    if any(word in message for word in ["\u5929\u6c14", "\u4e0b\u96e8", "\u6e29\u5ea6", "\u51b7\u5417", "\u70ed\u5417"]):
         return "weather_advice"
-    if any(word in message for word in ["添加攻略", "加入攻略", "保存攻略", "入库"]):
+    if any(word in message for word in ["\u6dfb\u52a0\u653b\u7565", "\u5bfc\u5165\u653b\u7565", "\u5165\u5e93", "\u65b0\u589e\u653b\u7565"]):
         return "add_guide"
-    if any(word in message for word in ["怎么玩", "行程", "路线", "几天", "三天", "两天"]):
+    if any(word in message for word in ["\u884c\u7a0b", "\u8def\u7ebf", "\u51e0\u5929", "\u4e24\u5929", "\u4e09\u5929", "\u653b\u7565", "citywalk"]):
         return "itinerary_planning"
-    if any(word in message for word in ["去哪", "推荐", "哪里", "目的地"]):
+    if any(word in message for word in ["\u63a8\u8350", "\u53bb\u54ea", "\u54ea\u91cc", "\u76ee\u7684\u5730"]):
         return "destination_recommendation"
     return "general_qa"
 
 
 def extract_slots_by_rules(message: str, context: dict) -> dict:
-    """规则槽位抽取。"""
+    """????????????????????????????????"""
     cities = [city for city in CITY_WORDS if city in message]
     origin = context.get("home_city")
     destination = None
@@ -84,10 +112,14 @@ def extract_slots_by_rules(message: str, context: dict) -> dict:
         origin, destination = cities[0], cities[1]
     elif len(cities) == 1:
         destination = cities[0]
+    if not destination:
+        destination = _infer_destination_from_message(message)
 
-    budget_match = re.search(r"预算\s*([0-9]{2,6})|([0-9]{2,6})\s*元", message)
-    days_match = re.search(r"([一二两三四五六七八九十0-9]+)\s*(?:天|日)", message)
-    date = "明天" if "明天" in message else ("周末" if "周末" in message else context.get("date"))
+    budget_match = re.search(r"(?:\u9884\u7b97|\u4eba\u5747)\s*([0-9]{2,6})|([0-9]{2,6})\s*(?:\u5143|\u5757)", message)
+    days_match = re.search(r"([\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u53410-9]+)\s*(?:\u5929|\u65e5)", message)
+    if not days_match:
+        days_match = re.search(r"([\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u53410-9]+)\s*\u5929\s*[\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u53410-9]+\s*\u591c", message)
+    date = "\u660e\u5929" if "\u660e\u5929" in message else ("\u5468\u672b" if "\u5468\u672b" in message else context.get("date"))
     budget = (budget_match.group(1) or budget_match.group(2)) if budget_match else context.get("budget")
 
     return {
@@ -99,6 +131,40 @@ def extract_slots_by_rules(message: str, context: dict) -> dict:
         "date": date,
         "style": context.get("preferred_style") or [],
     }
+
+
+def _clean_destination_candidate(value: object) -> str:
+    text = _normalize_text(value)
+    text = re.sub(r"^[\u53bb\u5230\u73a9\u901b]+", "", text)
+    text = re.sub(r"(?:\u73a9)?(?:[\u4e00\u4e8c\u4e24\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u53410-9]+(?:\u5929|\u65e5))(?:\u6e38)?$", "", text)
+    text = re.sub(r"(?:\u65c5\u884c|\u65c5\u6e38|\u653b\u7565|\u65b9\u6848|\u884c\u7a0b|\u5468\u672b\u6e38|citywalk|\u81ea\u7531\u884c)$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"[\u4e00\u5929\u4e00\u591c\u4e24\u5929\u4e00\u591c]+$", "", text)
+    text = re.sub(r"[，。；：,.!！?？\s]+", "", text)
+    return text[:12]
+
+
+def _is_valid_destination_candidate(value: str) -> bool:
+    text = _clean_destination_candidate(value)
+    if len(text) < 2 or len(text) > 8:
+        return False
+    if any(char.isdigit() for char in text):
+        return False
+    invalid_tokens = {"\u6211\u60f3", "\u9884\u7b97", "\u9ad8\u94c1", "\u7f8e\u98df", "\u591c\u666f", "\u65c5\u884c", "\u653b\u7565", "\u65b9\u6848", "\u884c\u7a0b"}
+    return text not in invalid_tokens
+
+
+def _infer_destination_from_message(message: str) -> str | None:
+    """?????????????????????????????????????"""
+    patterns = [
+        re.compile(r"(?:\u60f3\u53bb|\u60f3\u5230|\u51c6\u5907\u53bb|\u8ba1\u5212\u53bb|\u4ece[\u4e00-\u9fff]{2,8}\u53bb|\u53bb|\u5230)(?P<name>[\u4e00-\u9fff]{2,8})(?:\u73a9|\u65c5\u6e38|\u65c5\u884c|\u901b)?"),
+        re.compile(r"(?P<name>[\u4e00-\u9fff]{2,8})(?:\u4e00\u5929\u4e00\u591c|\u4e24\u5929\u4e00\u591c|\u4e24\u65e5\u6e38|\u4e09\u65e5\u6e38|\u5468\u672b\u6e38|citywalk|\u65c5\u6e38\u653b\u7565|\u65c5\u884c\u653b\u7565|\u6e38\u73a9\u653b\u7565|\u653b\u7565|\u65c5\u884c\u65b9\u6848|\u884c\u7a0b\u89c4\u5212)"),
+    ]
+    for pattern in patterns:
+        for match in pattern.finditer(message):
+            candidate = _clean_destination_candidate(match.group("name"))
+            if _is_valid_destination_candidate(candidate):
+                return candidate
+    return None
 
 
 def build_itinerary(destination: str | None, guides: list[dict], selected_guides: list[dict] | None = None) -> list[ItineraryBlock] | None:
@@ -538,6 +604,271 @@ def _coerce_int(value: object) -> int | None:
         return None
 
 
+def _coerce_day_number(value: object) -> int | None:
+    text = _normalize_text(value)
+    if not text:
+        return None
+    mapping = {
+        "\u4e00": 1,
+        "\u4e8c": 2,
+        "\u4e24": 2,
+        "\u4e09": 3,
+        "\u56db": 4,
+        "\u4e94": 5,
+        "\u516d": 6,
+        "\u4e03": 7,
+    }
+    if text.isdigit():
+        return int(text)
+    for key, number in mapping.items():
+        if key in text:
+            return number
+    return None
+
+
+def _planner_time_slots() -> list[str]:
+    return [
+        "\u65e9\u4e0a",
+        "\u4e0a\u5348",
+        "\u4e2d\u5348",
+        "\u4e0b\u5348",
+        "\u508d\u665a",
+        "\u665a\u4e0a",
+        "\u591c\u91cc",
+    ]
+
+
+def _split_route_points(text: str) -> list[str]:
+    cleaned = _normalize_text(text)
+    cleaned = re.sub(
+        r"^(?:\*{0,2})?(?:Day\s*\d+\s*)?(?:\u5f53\u5929\u5730\u70b9\u6e05\u5355|\u8def\u7ebf\u6458\u8981|\u884c\u7a0b\u4e3b\u7ebf)(?:\*{0,2})?[：:]\s*",
+        "",
+        cleaned,
+    )
+    parts = [
+        item.strip(" -*0123456789.()[]")
+        for item in re.split(r"\s*(?:->|=>|>|\\u2192|\\uff5c|\\||\\u3001|\\uff0c|,|\\uff1b|;)\s*", cleaned)
+        if item.strip()
+    ]
+    result: list[str] = []
+    for part in parts:
+        if _looks_generic_place(part):
+            continue
+        if part not in result:
+            result.append(part[:80])
+    return result
+
+
+def _pick_sentence_for_place(section: str, place_name: str) -> str:
+    slot_pattern = "|".join(_planner_time_slots())
+    for raw_line in section.splitlines():
+        line = _normalize_text(raw_line.strip("-* "))
+        if place_name not in line:
+            continue
+        line = line.replace("**", "")
+        line = re.sub(rf"^[0-9]+[.)、]?\s*{re.escape(place_name)}\s*[：:｜-]?\s*", "", line)
+        line = re.sub(rf"^(?:{slot_pattern})\s*[：:｜-]?\s*", "", line)
+        if line:
+            return line[:180]
+    return ""
+
+
+def _extract_named_list_section(section: str, marker: str) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    capture = False
+    for raw_line in section.splitlines():
+        line = _normalize_text(raw_line)
+        if not line:
+            if capture:
+                break
+            continue
+        plain = line.replace("**", "")
+        if marker in plain:
+            capture = True
+            continue
+        if capture and plain.startswith("###"):
+            break
+        if not capture:
+            continue
+        match = re.match(r"^(?:[-*]|\d+[.)、]?)\s*(?P<name>[^：:\n]{2,40})\s*[：:]\s*(?P<intro>.+)$", plain)
+        if not match:
+            break
+        name = _normalize_text(match.group("name"))
+        intro = _normalize_text(match.group("intro"))
+        if name and not _looks_generic_place(name):
+            result.append((name[:80], intro[:180]))
+    return result
+
+
+def _extract_section_hint(answer: str, headings: list[str]) -> str:
+    for heading in headings:
+        pattern = re.compile(rf"(?ms)^###?\s*{re.escape(heading)}\s*\n(?P<body>.*?)(?=^###?\s*\S|\Z)")
+        match = pattern.search(answer)
+        if not match:
+            continue
+        body_lines = [_normalize_text(item.replace("**", "")) for item in match.group("body").splitlines() if _normalize_text(item)]
+        if body_lines:
+            return body_lines[0][:200]
+    return ""
+
+
+def _build_structured_plan_from_sections(answer: str, state: TripAgentState) -> StructuredTravelPlan | None:
+    """?????????????????????????????????????????????"""
+    text = _normalize_text(answer)
+    if not text:
+        return None
+
+    time_slots = _planner_time_slots()
+    day_pattern = re.compile(
+        r"(?ms)^###?\s*(?:Day\s*(?P<digit>\d+)|\u7b2c\s*(?P<cn>[\u4e00-\u9fff0-9]+)\s*\u5929)(?:\s*[|｜:：-]\s*(?P<title>[^\n]+))?\n(?P<body>.*?)(?=^###?\s*(?:Day\s*\d+|\u7b2c\s*[\u4e00-\u9fff0-9]+\s*\u5929|\u9884\u7b97\u63d0\u793a|\u4ea4\u901a\u5efa\u8bae|\u96e8\u5929\u5907\u9009|\u98ce\u9669\u63d0\u9192|\u51fa\u884c\u63d0\u9192)|\Z)"
+    )
+    days_payload: list[dict] = []
+    for index, match in enumerate(day_pattern.finditer(answer), start=1):
+        day_number = _coerce_day_number(match.group("digit") or match.group("cn")) or index
+        title = _normalize_text(match.group("title") or f"Day {day_number} \u884c\u7a0b")
+        body = match.group("body").strip()
+        lines = [_normalize_text(item) for item in body.splitlines() if _normalize_text(item)]
+
+        summary = ""
+        for line in lines:
+            plain = line.replace("**", "")
+            if plain.startswith(("-", "*")) or "\u5f53\u5929\u5730\u70b9\u6e05\u5355" in plain or "\u5f53\u5929\u5730\u70b9\u7b80\u4ecb" in plain or "\u5730\u70b9\u6e05\u5355" in plain or "\u5730\u70b9\u7b80\u4ecb" in plain:
+                continue
+            if re.match(r"^(?:[0-9]+[.)?]?|(?:%s))" % "|".join(time_slots), plain):
+                continue
+            summary = plain[:240]
+            break
+
+        explicit_route: list[str] = []
+        for line in lines:
+            plain = line.replace("**", "")
+            if "\u5f53\u5929\u5730\u70b9\u6e05\u5355" in plain or "\u5730\u70b9\u6e05\u5355" in plain or "\u8def\u7ebf\u6458\u8981" in plain:
+                explicit_route = _split_route_points(plain)
+                if explicit_route:
+                    break
+
+        intro_pairs = _extract_named_list_section(body, "\u5f53\u5929\u5730\u70b9\u7b80\u4ecb") or _extract_named_list_section(body, "\u5730\u70b9\u7b80\u4ecb")
+        seen_places: set[str] = set()
+        places_payload: list[dict] = []
+        route_candidates = explicit_route or [name for name, _intro in intro_pairs] or _extract_place_names(body)
+        for place_index, place_name in enumerate(route_candidates[:8], start=1):
+            normalized_name = _normalize_text(place_name)
+            if not normalized_name or _looks_generic_place(normalized_name):
+                continue
+            key = _normalize_compact(normalized_name)
+            if key in seen_places:
+                continue
+            seen_places.add(key)
+            intro = next((item_intro for item_name, item_intro in intro_pairs if _normalize_compact(item_name) == key), "")
+            if not intro:
+                intro = _pick_sentence_for_place(body, normalized_name)
+            places_payload.append(
+                {
+                    "name": normalized_name[:80],
+                    "aliases": [],
+                    "intro": intro[:180],
+                    "category": None,
+                    "stay_minutes": None,
+                    "transport_hint": None,
+                    "order": place_index,
+                }
+            )
+
+        agenda_payload: list[dict] = []
+        for raw_line in lines:
+            plain = raw_line.replace("**", "").strip("-* ")
+            time_match = re.match(
+                r"^(?P<time>%s)\s*[|｜:：-]?\s*(?P<title>[^：:\n]{2,40})(?:[：:]\s*(?P<detail>.+))?$" % "|".join(time_slots),
+                plain,
+            )
+            if not time_match:
+                continue
+            agenda_payload.append(
+                {
+                    "time": time_match.group("time"),
+                    "title": _normalize_text(time_match.group("title"))[:120],
+                    "detail": _normalize_text(time_match.group("detail"))[:600],
+                    "place_name": _normalize_text(time_match.group("title"))[:80],
+                    "transport_hint": None,
+                }
+            )
+        if not agenda_payload and places_payload:
+            for place_index, place in enumerate(places_payload[:4], start=1):
+                agenda_payload.append(
+                    {
+                        "time": time_slots[min(place_index - 1, len(time_slots) - 1)],
+                        "title": place["name"],
+                        "detail": place["intro"] or "\u53ef\u5728\u8fd9\u4e00\u65f6\u6bb5\u7ee7\u7eed\u7ec6\u5316\u505c\u7559\u65b9\u5f0f\u3002",
+                        "place_name": place["name"],
+                        "transport_hint": None,
+                    }
+                )
+
+        if agenda_payload or places_payload:
+            days_payload.append(
+                {
+                    "day": day_number,
+                    "title": title[:120],
+                    "summary": summary[:240],
+                    "route_digest": " -> ".join([place["name"] for place in places_payload[:6]]),
+                    "agenda": agenda_payload[:10],
+                    "places": places_payload[:10],
+                }
+            )
+
+    budget_hint = _extract_section_hint(answer, ["\u9884\u7b97\u63d0\u793a"])
+    transport_hint = _extract_section_hint(answer, ["\u4ea4\u901a\u5efa\u8bae"])
+    rainy_day_hint = _extract_section_hint(answer, ["\u96e8\u5929\u5907\u9009"])
+    risk_hint = _extract_section_hint(answer, ["\u98ce\u9669\u63d0\u9192", "\u51fa\u884c\u63d0\u9192"])
+    city = _normalize_text((state.get("slots") or {}).get("destination")) or _infer_destination_from_message(state.get("user_message", ""))
+    if not city:
+        city = _infer_destination_from_message(answer[:120])
+
+    if not days_payload:
+        derived_places = _extract_place_names(answer)
+        if derived_places:
+            fallback_state = {
+                **state,
+                "planning_place_pool": [{"name": name, "reason": "\u6765\u81ea\u8be6\u7ec6\u653b\u7565\u6b63\u6587"} for name in derived_places],
+            }
+            return _build_structured_plan_fallback(fallback_state)
+        return None
+
+    summary_candidates = [line.strip() for line in answer.splitlines() if line.strip() and not line.strip().startswith("#")]
+    trip_summary = summary_candidates[0][:400] if summary_candidates else f"\u5148\u4e3a\u4f60\u6574\u7406\u4e86\u4e00\u7248 {city or '\u76ee\u7684\u5730'} \u53ef\u6267\u884c\u7684\u8be6\u7ec6\u653b\u7565\u3002"
+    payload = {
+        "city": city,
+        "trip_summary": trip_summary,
+        "planning_style": _extract_section_hint(answer, ["\u89c4\u5212\u6982\u89c8"]) or "\u8be6\u7ec6\u53ef\u6267\u884c\u65b9\u6848",
+        "budget_hint": budget_hint,
+        "transport_hint": transport_hint,
+        "rainy_day_hint": rainy_day_hint,
+        "risk_hint": risk_hint,
+        "days": days_payload,
+    }
+    return _normalize_structured_plan(payload, state)
+
+
+def _looks_like_rich_planning_answer(answer: str | None) -> bool:
+    text = _normalize_text(answer)
+    if len(text) < 420:
+        return False
+    day_hits = len(re.findall(r"(?i)day\s*\d+|\u7b2c\s*[\u4e00-\u9fff0-9]+\s*\u5929", text))
+    if day_hits < 1:
+        return False
+    return any(
+        section in text
+        for section in ["\u5f53\u5929\u5730\u70b9\u6e05\u5355", "\u5f53\u5929\u5730\u70b9\u7b80\u4ecb", "\u9884\u7b97\u63d0\u793a", "\u4ea4\u901a\u5efa\u8bae"]
+    )
+
+
+def _compose_planner_answer(plan: StructuredTravelPlan, state: TripAgentState, rich_answer: str | None = None) -> str:
+    """????????????????????????????????????"""
+    if _looks_like_rich_planning_answer(rich_answer):
+        return _normalize_text(rich_answer)
+    return _render_structured_answer(plan, state)
+
+
 def _build_structured_plan_fallback(state: TripAgentState) -> StructuredTravelPlan | None:
     """中文注释：模型 JSON 失败时，用规则行程兜底出一份最小可用结构，避免地图断链。"""
     destination = _normalize_text((state.get("slots") or {}).get("destination"))
@@ -680,81 +1011,313 @@ def _build_itinerary_from_structured_plan(plan: StructuredTravelPlan | None) -> 
 
 
 def _render_structured_answer(plan: StructuredTravelPlan, state: TripAgentState) -> str:
-    """中文注释：统一把结构化行程渲染成稳定的人类可读回复，避免模型文案漂移影响前端和地图。"""
-    lines: list[str] = []
-    city = plan.city or str((state.get("slots") or {}).get("destination") or "目的地")
-    lines.append(f"## {city}旅行方案")
+    """???????????????????????????????????????"""
+    city = plan.city or str((state.get("slots") or {}).get("destination") or "\u76ee\u7684\u5730")
+    lines: list[str] = [f"## {city}\u65c5\u884c\u65b9\u6848"]
+    time_slots = _planner_time_slots()
+
     if plan.trip_summary:
         lines.append(plan.trip_summary)
-    overview_bits = [bit for bit in [plan.planning_style, plan.budget_hint, plan.transport_hint] if bit]
-    if overview_bits:
+
+    overview_lines = [item for item in [plan.planning_style, plan.budget_hint, plan.transport_hint] if item]
+    if overview_lines:
         lines.append("")
-        lines.append("### 规划概览")
-        lines.extend([f"- {bit}" for bit in overview_bits])
+        lines.append("### \u89c4\u5212\u6982\u89c8")
+        for item in overview_lines:
+            lines.append(f"- {item}")
 
     for day in plan.days:
         lines.append("")
         lines.append(f"### Day {day.day} | {day.title}")
         if day.summary:
             lines.append(day.summary)
-        for item in day.agenda[:10]:
-            title = item.title or item.place_name or "待补充安排"
-            detail = item.detail or item.transport_hint or "可继续补充该时段安排。"
-            prefix = f"{item.time} | " if item.time else ""
-            lines.append(f"- **{prefix}{title}**：{detail}")
+
+        agenda = day.agenda or []
+        if not agenda and day.places:
+            agenda = [
+                StructuredAgendaItem(
+                    time=time_slots[min(index, len(time_slots) - 1)],
+                    title=place.name,
+                    detail=place.intro or "\u53ef\u7ee7\u7eed\u7ec6\u5316\u8fd9\u4e00\u65f6\u6bb5\u7684\u505c\u7559\u65b9\u5f0f\u3002",
+                    place_name=place.name,
+                    transport_hint=place.transport_hint,
+                )
+                for index, place in enumerate(day.places[:6])
+            ]
+        for item in agenda[:10]:
+            title = item.title or item.place_name or "\u5f85\u8865\u5145\u5b89\u6392"
+            detail = item.detail or item.transport_hint or "\u53ef\u7ee7\u7eed\u8865\u5145\u8fd9\u4e00\u65f6\u6bb5\u7684\u5b89\u6392\u7ec6\u8282\u3002"
+            if item.time:
+                lines.append(f"- **{item.time} | {title}**: {detail}")
+            else:
+                lines.append(f"- **{title}**: {detail}")
+
         if day.places:
             lines.append("")
-            lines.append(f"**Day {day.day} 地点清单**")
+            lines.append(f"**Day {day.day} \u5730\u70b9\u6e05\u5355**")
             lines.append(" -> ".join(place.name for place in day.places[:8]))
             lines.append("")
-            lines.append(f"**Day {day.day} 地点简介**")
+            lines.append(f"**Day {day.day} \u5730\u70b9\u7b80\u4ecb**")
             for index, place in enumerate(day.places[:8], start=1):
-                suffix = f"；{place.transport_hint}" if place.transport_hint else ""
-                intro = place.intro or "适合纳入这一天的主线安排。"
-                lines.append(f"{index}. {place.name}：{intro}{suffix}")
+                intro = place.intro or "\u9002\u5408\u4f5c\u4e3a\u8fd9\u4e00\u5929\u7684\u4e3b\u7ebf\u5730\u70b9\u7ee7\u7eed\u5c55\u5f00\u3002"
+                suffix = f" ({place.transport_hint})" if place.transport_hint else ""
+                lines.append(f"{index}. {place.name}: {intro}{suffix}")
 
-    extra_hints = [
-        ("预算提示", plan.budget_hint),
-        ("交通建议", plan.transport_hint),
-        ("雨天备选", plan.rainy_day_hint),
-        ("风险提醒", plan.risk_hint),
+    hint_sections = [
+        ("\u9884\u7b97\u63d0\u793a", plan.budget_hint),
+        ("\u4ea4\u901a\u5efa\u8bae", plan.transport_hint),
+        ("\u96e8\u5929\u5907\u9009", plan.rainy_day_hint),
+        ("\u98ce\u9669\u63d0\u9192", plan.risk_hint),
     ]
-    available_hints = [(title, content) for title, content in extra_hints if content]
+    available_hints = [(title, content) for title, content in hint_sections if content]
     if available_hints:
         lines.append("")
-        lines.append("### 出行提醒")
+        lines.append("### \u51fa\u884c\u63d0\u9192")
         for title, content in available_hints:
-            lines.append(f"- **{title}**：{content}")
+            lines.append(f"- **{title}**: {content}")
 
     return "\n".join(lines).strip()
 
 
+def _parse_budget_value(value: object) -> int | None:
+    """中文注释：从预算槽位里提取数值，便于前端做预算分布可视化。"""
+    text = _normalize_text(value)
+    match = re.search(r"([1-9][0-9]{2,5})", text)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _build_budget_view(plan: StructuredTravelPlan, state: TripAgentState) -> TravelPlanBudgetView:
+    """中文注释：把预算提示整理成卡片化结构，前端不再依赖长文本自行拆分。"""
+    budget_value = _parse_budget_value((state.get("slots") or {}).get("budget"))
+    days_count = max(1, len(plan.days) or _coerce_days_count((state.get("slots") or {}).get("days"), default=2))
+    if budget_value:
+        lodging_ratio = 0.34 if days_count <= 2 else 0.38
+        transport_ratio = 0.28
+        food_ratio = 0.24
+        flexible_ratio = max(0.08, 1 - lodging_ratio - transport_ratio - food_ratio)
+        items = [
+            ("交通", transport_ratio, "优先高铁与地铁，减少临时打车波动"),
+            ("住宿", lodging_ratio, f"按 {days_count - 1 if days_count > 1 else 1} 晚舒适型标准预估"),
+            ("餐饮", food_ratio, "保留地方美食与夜间加餐弹性"),
+            ("机动", flexible_ratio, "给门票、排队和临时调整留余量"),
+        ]
+        return TravelPlanBudgetView(
+            summary=plan.budget_hint or f"按总预算 {budget_value} 元估算，这版方案可以维持舒适但不过度堆叠的节奏。",
+            total_hint=f"约 {budget_value} 元",
+            items=[
+                TravelPlanBudgetItem(
+                    name=name,
+                    amount=f"{round(budget_value * ratio)} 元",
+                    note=note,
+                    ratio=round(ratio, 4),
+                )
+                for name, ratio, note in items
+            ],
+        )
+
+    fallback_items = [
+        TravelPlanBudgetItem(name="交通", amount="待确认", note="可结合铁路工作台锁定主交通成本"),
+        TravelPlanBudgetItem(name="住宿", amount="待确认", note="建议先确定酒店带宽，再细化总预算"),
+        TravelPlanBudgetItem(name="餐饮", amount="待确认", note="根据美食密度和商圈等级再做浮动"),
+    ]
+    return TravelPlanBudgetView(
+        summary=plan.budget_hint or "当前尚未识别出明确预算，建议先确认总预算或人均带宽。",
+        total_hint="待补充",
+        items=fallback_items,
+    )
+
+
+def _collect_supplements(plan: StructuredTravelPlan, state: TripAgentState) -> list[TravelPlanSupplement]:
+    """中文注释：把玩法补充拆成主题卡片，避免全部挤进主回复正文。"""
+    guide_count = len(state.get("retrieved_guides", []))
+    web_count = len(state.get("web_items", []))
+    modules = state.get("decision_modules") or []
+    result: list[TravelPlanSupplement] = []
+
+    result.append(
+        TravelPlanSupplement(
+            title="出行策略",
+            summary=plan.transport_hint or "优先串联主交通和核心景点，降低折返成本。",
+            bullets=[
+                plan.transport_hint or "优先高铁/地铁主链路，站点周边短距离再用步行或打车。",
+                "地图工作台应以结构化地点为准，不再反向解析整段长文。",
+                "铁路结果建议先锁定时段，再反推每日景点先后。",
+            ],
+            tone="info",
+        )
+    )
+
+    result.append(
+        TravelPlanSupplement(
+            title="雨天与风险",
+            summary=plan.rainy_day_hint or plan.risk_hint or "保持一条室内替代链路，避免天气导致整体失真。",
+            bullets=[
+                item
+                for item in [
+                    plan.rainy_day_hint,
+                    plan.risk_hint,
+                    "热门城市节假日人流和排队波动较大，建议前置预约与错峰。",
+                ]
+                if item
+            ],
+            tone="warn",
+        )
+    )
+
+    result.append(
+        TravelPlanSupplement(
+            title="检索与证据",
+            summary=f"本轮方案已结合 {guide_count} 条本地攻略片段与 {web_count} 条联网来源做交叉参考。",
+            bullets=[
+                "地图、铁路、天气属于工具真相层，优先级高于自然语言长文。",
+                "本地攻略负责风格与玩法参考，联网搜索负责补齐新近变化信息。",
+                f"当前决策模块数：{len(modules)}，可继续在决策区做接受、忽略和再优化。",
+            ],
+            tone="good",
+        )
+    )
+    return result
+
+
+def _build_travel_plan_view(plan: StructuredTravelPlan | None, state: TripAgentState) -> TravelPlanView | None:
+    """中文注释：从结构化方案生成页面渲染层，让前端直接渲染成攻略工作台。"""
+    if not plan or not plan.days:
+        return None
+
+    city = plan.city or _normalize_text((state.get("slots") or {}).get("destination")) or "目的地"
+    day_views: list[TravelPlanDayView] = []
+    markers: list[TravelPlanMapMarker] = []
+    for day in plan.days:
+        pois: list[TravelPlanPoiCard] = []
+        route_points = [place.name for place in day.places[:8]]
+        transport_hints: list[str] = []
+        for place in day.places[:8]:
+            stay_text = f"{place.stay_minutes} 分钟" if place.stay_minutes else ""
+            tags = [item for item in [place.category, stay_text] if item]
+            if place.transport_hint:
+                transport_hints.append(place.transport_hint)
+            pois.append(
+                TravelPlanPoiCard(
+                    name=place.name,
+                    intro=place.intro or "适合作为这一天的主线节点继续展开。",
+                    category=place.category,
+                    stay_text=stay_text,
+                    transport_hint=place.transport_hint or "",
+                    tags=tags,
+                    order=place.order,
+                )
+            )
+            markers.append(
+                TravelPlanMapMarker(
+                    day=day.day,
+                    order=place.order,
+                    title=place.name,
+                    address=place.transport_hint or "",
+                    intro=place.intro or "",
+                )
+            )
+
+        if not pois and day.agenda:
+            for item_index, item in enumerate(day.agenda[:8], start=1):
+                place_name = item.place_name or item.title or f"Day {day.day} 节点 {item_index}"
+                if item.transport_hint:
+                    transport_hints.append(item.transport_hint)
+                pois.append(
+                    TravelPlanPoiCard(
+                        name=place_name,
+                        intro=item.detail or "可继续补充这一时段的地点说明。",
+                        transport_hint=item.transport_hint or "",
+                        tags=[item.time] if item.time else [],
+                        order=item_index,
+                    )
+                )
+                markers.append(
+                    TravelPlanMapMarker(
+                        day=day.day,
+                        order=item_index,
+                        title=place_name,
+                        address=item.transport_hint or "",
+                        intro=item.detail or "",
+                    )
+                )
+
+        transit_hint = "；".join(dict.fromkeys([item for item in transport_hints if item]))[:160]
+        strategy = day.summary or day.route_digest or f"Day {day.day} 以 {city} 的核心体验为主，控制节奏，减少无效折返。"
+        day_views.append(
+            TravelPlanDayView(
+                day=day.day,
+                title=day.title or f"{city} 第 {day.day} 天",
+                summary=day.summary or "",
+                strategy=strategy[:240],
+                route_digest=day.route_digest or " -> ".join(route_points[:6]),
+                route_points=route_points,
+                transit_hint=transit_hint,
+                agenda=day.agenda[:10],
+                pois=pois,
+            )
+        )
+
+    overview_highlights = [
+        item
+        for item in [plan.planning_style, plan.budget_hint, plan.transport_hint, plan.rainy_day_hint]
+        if item
+    ]
+    action_hints = [
+        "查看地图工作台确认路线顺序",
+        "将出发地和日期带入 12306 工作台",
+        "在可编辑行程中调整景点、交通和预算后继续二次优化",
+    ]
+    return TravelPlanView(
+        overview=TravelPlanOverview(
+            title=f"{city}{len(plan.days)}日旅行方案",
+            summary=plan.trip_summary or f"这是一版面向执行的 {city} 多日攻略，已经按日拆分核心地点和交通线索。",
+            highlights=overview_highlights[:4],
+        ),
+        map_schedule=TravelPlanMapSchedule(
+            city=plan.city,
+            title=f"{city} 行程地图主线",
+            markers=markers,
+        ),
+        days=day_views,
+        budget=_build_budget_view(plan, state),
+        supplements=_collect_supplements(plan, state),
+        action_hints=action_hints,
+    )
+
+
 async def _extract_structured_plan_from_answer(answer: str, state: TripAgentState) -> StructuredTravelPlan | None:
-    """中文注释：把模型生成的自然语言攻略二次压成结构，让地图链路永远优先吃结构化结果。"""
+    """????????????????????????????????????? JSON ???"""
     if not answer.strip():
         return None
+
+    section_plan = _build_structured_plan_from_sections(answer, state)
+    if section_plan and section_plan.days:
+        return section_plan
+
     llm = LlmService()
     if not llm.configured():
-        return None
+        return section_plan
 
     prompt = "\n".join(
         [
-            "请把下面这份中国旅行攻略转换为严格 JSON。",
-            "只输出 JSON，不要解释，不要 Markdown。",
-            "必须输出字段：city、trip_summary、planning_style、budget_hint、transport_hint、rainy_day_hint、risk_hint、days。",
-            "days 中每一天必须包含：day、title、summary、route_digest、agenda、places。",
-            "agenda 每项字段：time、title、detail、place_name、transport_hint。",
-            "places 每项字段：name、aliases、intro、category、stay_minutes、transport_hint、order。",
-            "如果当天存在多个真实地点，必须拆开写进 places。",
-            "如果地点名是别称或英文缩写，name 用正式中文名，别名放 aliases。",
-            f"目标城市提示：{str((state.get('slots') or {}).get('destination') or '').strip() or '未知'}",
-            f"候选地点池提示：{state.get('planning_place_pool') or []}",
+            "Please convert the following China travel guide into strict JSON.",
+            "Return JSON only. No explanation. No Markdown.",
+            "Required fields: city, trip_summary, planning_style, budget_hint, transport_hint, rainy_day_hint, risk_hint, days.",
+            "Each day must include: day, title, summary, route_digest, agenda, places.",
+            "Agenda item fields: time, title, detail, place_name, transport_hint.",
+            "Place fields: name, aliases, intro, category, stay_minutes, transport_hint, order.",
+            f"Target city: {str((state.get('slots') or {}).get('destination') or '').strip() or 'unknown'}",
+            f"Candidate places: {state.get('planning_place_pool') or []}",
             "",
             answer[:5000],
         ]
     )
     payload = await llm.json_chat(prompt)
-    return _normalize_structured_plan(payload or {}, state)
+    normalized = _normalize_structured_plan(payload or {}, state)
+    return normalized or section_plan
+
 
 def _normalize_city_value(value: object) -> str | None:
     if value is None:
@@ -1012,32 +1575,32 @@ async def route_node(state: TripAgentState) -> TripAgentState:
 
 
 async def planner_node(state: TripAgentState) -> TripAgentState:
-    """规划生成节点。"""
+    """??????????????????????????????????????"""
     llm = LlmService()
     state["planning_place_pool"] = await _build_planning_place_pool(state)
-    prompt = _build_planner_prompt(state)
-    planner_payload = await llm.json_chat(prompt)
-    structured_plan = _normalize_structured_plan(planner_payload or {}, state)
 
+    structured_plan: StructuredTravelPlan | None = None
+    rich_answer: str | None = None
+
+    planner_payload = await llm.json_chat(_build_planner_prompt(state)) if llm.configured() else None
+    if planner_payload:
+        structured_plan = _normalize_structured_plan(planner_payload, state)
+
+    if llm.configured():
+        rich_answer = await llm.plain_chat(_build_planner_text_prompt(state))
+
+    if not structured_plan and rich_answer:
+        structured_plan = await _extract_structured_plan_from_answer(rich_answer, state)
+
+    if not structured_plan:
+        structured_plan = _build_structured_plan_fallback(state)
+
+    state["structured_plan"] = structured_plan.model_dump() if structured_plan else None
+    state["itinerary"] = _build_itinerary_from_structured_plan(structured_plan)
     if structured_plan:
-        state["structured_plan"] = structured_plan.model_dump()
-        state["itinerary"] = _build_itinerary_from_structured_plan(structured_plan)
-        state["final_answer"] = _render_structured_answer(structured_plan, state)
-        return state
-
-    rich_answer = await llm.plain_chat(_build_planner_text_prompt(state))
-    if rich_answer:
-        extracted_plan = await _extract_structured_plan_from_answer(rich_answer, state)
-        if extracted_plan:
-            state["structured_plan"] = extracted_plan.model_dump()
-            state["itinerary"] = _build_itinerary_from_structured_plan(extracted_plan)
-            state["final_answer"] = _render_structured_answer(extracted_plan, state)
-            return state
-
-    fallback_plan = _build_structured_plan_fallback(state)
-    state["structured_plan"] = fallback_plan.model_dump() if fallback_plan else None
-    state["itinerary"] = _build_itinerary_from_structured_plan(fallback_plan)
-    state["final_answer"] = _render_structured_answer(fallback_plan, state) if fallback_plan else (rich_answer or compose_fallback_answer(state))
+        state["final_answer"] = _compose_planner_answer(structured_plan, state, rich_answer)
+    else:
+        state["final_answer"] = rich_answer or compose_fallback_answer(state)
     return state
 
 
@@ -1055,6 +1618,11 @@ async def response_node(state: TripAgentState) -> TripAgentState:
     state["sources"] = build_sources(state.get("guide_items", []), state.get("web_items", []))
     state["warnings"] = build_warnings(weather, railway)
     state["decision_modules"] = build_decision_modules(state)
+    try:
+        structured_plan = StructuredTravelPlan.model_validate(state["structured_plan"]) if state.get("structured_plan") else None
+    except ValidationError:
+        structured_plan = None
+    state["travel_plan_view"] = _build_travel_plan_view(structured_plan, state)
     state["tool_calls_view"] = recent_tool_calls(state)
     return state
 

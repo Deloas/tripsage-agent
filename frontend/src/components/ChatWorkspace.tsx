@@ -16,6 +16,7 @@ import {
   Link2,
   ListChecks,
   LogIn,
+  MapPinned,
   PanelLeftOpen,
   PanelRightOpen,
   PencilLine,
@@ -29,8 +30,9 @@ import {
   WandSparkles,
   X,
 } from "lucide-react";
-import { FormEvent, KeyboardEvent, forwardRef, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, Fragment, KeyboardEvent, ReactNode, forwardRef, useEffect, useMemo, useRef, useState } from "react";
 
+import { TravelPlanWorkbench } from "./TravelPlanWorkbench";
 import type {
   ChatResponse,
   DecisionModule,
@@ -65,6 +67,8 @@ interface ChatWorkspaceProps {
   onOpenEvidence: () => void;
   onOpenEvidenceWorkspace: () => void;
   onOpenRailway: () => void;
+  onOpenMapFromPlan?: (payload: { day?: number; pointName?: string | null }) => void;
+  onOpenRailwayFromPlan?: (payload: { destination?: string | null; date?: string | null; hint?: string | null }) => void;
   onOpenUserCenter: () => void;
   onClearReferencedGuide: () => void;
   onOpenReferencedGuide: (detailMode?: "preview" | "edit") => void;
@@ -208,6 +212,8 @@ export function ChatWorkspace({
   onOpenEvidence,
   onOpenEvidenceWorkspace,
   onOpenRailway,
+  onOpenMapFromPlan,
+  onOpenRailwayFromPlan,
   onOpenUserCenter,
   onClearReferencedGuide,
   onOpenReferencedGuide,
@@ -250,6 +256,7 @@ export function ChatWorkspace({
   const toolCount = latest?.tool_calls?.length || 0;
   const decisionCount = latest?.decision_modules?.length || 0;
   const destination = cards.find((card) => card.type === "destination")?.title || "准备开始新的旅行方案";
+  const destinationCity = latest?.travel_plan_view?.map_schedule?.city || latest?.structured_plan?.city || destination;
 
   function submitCurrent() {
     const text = value.trim();
@@ -304,6 +311,49 @@ export function ChatWorkspace({
       composerTextareaRef.current?.focus({ preventScroll: true });
       composerTextareaRef.current?.setSelectionRange(prompt.length, prompt.length);
     });
+  }
+
+  function handleOptimizePlace(payload: {
+    placeName: string;
+    detail: string;
+    dayNumber?: number | null;
+    itinerary?: ItineraryBlock[] | null;
+    prompt: string;
+  }) {
+    if (loading) return;
+
+    const scopedItinerary = payload.itinerary || latest?.itinerary || [];
+    if (scopedItinerary.length) {
+      const targetDayNumber = payload.dayNumber && scopedItinerary.some((item) => item.day === payload.dayNumber)
+        ? payload.dayNumber
+        : scopedItinerary[0].day;
+      const nextItinerary = scopedItinerary.map((day) => (
+        day.day === targetDayNumber
+          ? {
+              ...day,
+              items: [
+                ...day.items,
+                {
+                  time: "弹性时段",
+                  title: payload.placeName,
+                  detail: payload.detail || `请把 ${payload.placeName} 融入这一天的动线中，并补齐停留、交通和用餐建议。`,
+                },
+              ],
+            }
+          : day
+      ));
+      setPrimaryTab("itinerary");
+      onOptimizeItinerary({
+        itinerary: nextItinerary,
+        transport_note: "优先保留顺路衔接，减少折返，必要时自动重排当天顺序。",
+        budget_note: "加入新地点后重新核算预算波动，尽量保持原有预算区间。",
+        user_goal: payload.prompt,
+      });
+      return;
+    }
+
+    setPrimaryTab("messages");
+    onSubmit(payload.prompt);
   }
 
   useEffect(() => {
@@ -482,6 +532,13 @@ export function ChatWorkspace({
 
                 <div className="planner-message-scroll" ref={messageScrollRef}>
                   <div className="planner-message-list">
+                    {latest?.travel_plan_view ? (
+                      <TravelPlanWorkbench
+                        view={latest.travel_plan_view}
+                        onOpenMap={onOpenMapFromPlan}
+                        onOpenRailway={onOpenRailwayFromPlan}
+                      />
+                    ) : null}
                     {messages.map((message, index) => {
                       const canOpenReader = message.role === "assistant" && message.content.trim().length > 0;
                       return (
@@ -499,7 +556,16 @@ export function ChatWorkspace({
                               </button>
                             ) : null}
                           </div>
-                          {message.role === "assistant" ? <AnswerRenderer content={message.content} /> : <p>{message.content}</p>}
+                          {message.role === "assistant" ? (
+                            <AnswerRenderer
+                              content={message.content}
+                              destinationCity={destinationCity}
+                              itinerary={latest?.itinerary}
+                              onOpenMap={onOpenMapFromPlan}
+                              onOpenRailway={onOpenRailwayFromPlan}
+                              onOptimizePlace={handleOptimizePlace}
+                            />
+                          ) : <p>{message.content}</p>}
                         </article>
                       );
                     })}
@@ -703,7 +769,14 @@ export function ChatWorkspace({
               </button>
             </header>
             <div className="planner-reader-body">
-              <AnswerRenderer content={readerMessage.content} />
+              <AnswerRenderer
+                content={readerMessage.content}
+                destinationCity={destinationCity}
+                itinerary={latest?.itinerary}
+                onOpenMap={onOpenMapFromPlan}
+                onOpenRailway={onOpenRailwayFromPlan}
+                onOptimizePlace={handleOptimizePlace}
+              />
             </div>
           </section>
         </div>
@@ -1320,39 +1393,547 @@ function SecondaryEmptyState({ text }: { text: string }) {
   );
 }
 
-function AnswerRenderer({ content }: { content: string }) {
-  const blocks = useMemo(
-    () => content.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean),
-    [content],
+type AnswerSectionKind = "overview" | "day" | "place" | "budget" | "transport" | "rainy" | "risk" | "default" | "table";
+
+interface AnswerHeroModel {
+  title: string | null;
+  paragraphs: string[];
+}
+
+interface AnswerSectionModel {
+  id: string;
+  kind: AnswerSectionKind;
+  title: string;
+  dayNumber?: number | null;
+  paragraphs: string[];
+  listItems: string[];
+  table?: string;
+}
+
+interface AnswerRenderModel {
+  hero: AnswerHeroModel;
+  sections: AnswerSectionModel[];
+}
+
+function normalizeAnswerText(value: string) {
+  return value.replace(/\r/g, "").replace(/\u00a0/g, " ").trim();
+}
+
+function stripMarkdownDecorations(value: string) {
+  return value
+    .replace(/^#{1,4}\s+/, "")
+    .replace(/^\*\*(.+)\*\*$/, "$1")
+    .replace(/`/g, "")
+    .trim();
+}
+
+function isDividerBlock(value: string) {
+  return /^(-{3,}|_{3,}|={3,})$/.test(value.trim());
+}
+
+function isListLine(value: string) {
+  return /^([-*•]\s+|\d+[.)、]\s+)/.test(value.trim());
+}
+
+function cleanListLine(value: string) {
+  return stripMarkdownDecorations(value.replace(/^([-*•]\s+|\d+[.)、]\s+)/, "").trim());
+}
+
+function extractSectionHeading(block: string) {
+  const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  const firstLine = lines[0];
+  const cleanedFirstLine = stripMarkdownDecorations(firstLine);
+  if (/^#{1,4}\s+/.test(firstLine) || /^\*\*.+\*\*$/.test(firstLine)) {
+    return {
+      title: cleanedFirstLine,
+      remainder: lines.slice(1),
+    };
+  }
+  if (/^(day\s*\d+|第[一二三四五六七八九十\d]+天)/i.test(cleanedFirstLine)) {
+    return {
+      title: cleanedFirstLine,
+      remainder: lines.slice(1),
+    };
+  }
+  return null;
+}
+
+function inferAnswerSectionKind(title: string): AnswerSectionKind {
+  const text = stripMarkdownDecorations(title);
+  if (/day\s*\d+|第[一二三四五六七八九十\d]+天/i.test(text)) return "day";
+  if (/概览|总览|总规划|路线概览|行程概览/.test(text)) return "overview";
+  if (/地点清单|地点简介|景点简介|景点清单|打卡点|地点总览/.test(text)) return "place";
+  if (/预算/.test(text)) return "budget";
+  if (/交通/.test(text)) return "transport";
+  if (/雨天|备选|阴天/.test(text)) return "rainy";
+  if (/风险|提醒|注意|避坑/.test(text)) return "risk";
+  return "default";
+}
+
+function extractSectionDayNumber(title: string) {
+  const normalized = stripMarkdownDecorations(title);
+  const dayMatch = normalized.match(/day\s*(\d+)/i);
+  if (dayMatch) return Number(dayMatch[1]);
+  const zhDayMatch = normalized.match(/第(\d+)天/);
+  if (zhDayMatch) return Number(zhDayMatch[1]);
+  return null;
+}
+
+function buildSectionContent(blocks: string[]) {
+  const paragraphs: string[] = [];
+  const listItems: string[] = [];
+  const tables: string[] = [];
+
+  blocks.forEach((block) => {
+    const trimmedBlock = block.trim();
+    if (!trimmedBlock) return;
+    if (trimmedBlock.startsWith("|") || trimmedBlock.includes("\n|")) {
+      tables.push(trimmedBlock);
+      return;
+    }
+    const lines = trimmedBlock.split("\n").map((line) => line.trim()).filter(Boolean);
+    if (!lines.length) return;
+
+    if (lines.every(isListLine)) {
+      listItems.push(...lines.map(cleanListLine).filter(Boolean));
+      return;
+    }
+
+    const listLines = lines.filter(isListLine);
+    if (listLines.length >= 2 && listLines.length >= Math.ceil(lines.length * 0.6)) {
+      listItems.push(...listLines.map(cleanListLine).filter(Boolean));
+      const proseLines = lines.filter((line) => !isListLine(line));
+      if (proseLines.length) {
+        paragraphs.push(stripMarkdownDecorations(proseLines.join(" ")));
+      }
+      return;
+    }
+
+    paragraphs.push(stripMarkdownDecorations(lines.join(" ")));
+  });
+
+  return {
+    paragraphs,
+    listItems,
+    tables,
+  };
+}
+
+function looksLikeHeroTitle(value: string) {
+  const text = stripMarkdownDecorations(value);
+  if (!text || text.length > 28) return false;
+  if (/[。！？:：]/.test(text)) return false;
+  if (isListLine(text) || text.startsWith("|")) return false;
+  return /攻略|方案|规划|旅行|游玩|行程|城市/.test(text) || text.length <= 12;
+}
+
+function buildAnswerRenderModel(content: string): AnswerRenderModel {
+  const normalized = normalizeAnswerText(content);
+  if (!normalized) {
+    return {
+      hero: { title: null, paragraphs: [] },
+      sections: [],
+    };
+  }
+
+  const rawBlocks = normalized.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  const leadBlocks: string[] = [];
+  const sections: Array<{ title: string; blocks: string[] } | { table: string }> = [];
+  let currentSection: { title: string; blocks: string[] } | null = null;
+
+  rawBlocks.forEach((block) => {
+    if (isDividerBlock(block)) {
+      if (currentSection) {
+        sections.push(currentSection);
+        currentSection = null;
+      }
+      return;
+    }
+
+    if (block.startsWith("|") || block.includes("\n|")) {
+      if (currentSection) {
+        currentSection.blocks.push(block);
+      } else {
+        sections.push({ table: block });
+      }
+      return;
+    }
+
+    const heading = extractSectionHeading(block);
+    if (heading) {
+      if (currentSection) {
+        sections.push(currentSection);
+      }
+      currentSection = {
+        title: heading.title,
+        blocks: heading.remainder.length ? [heading.remainder.join("\n")] : [],
+      };
+      return;
+    }
+
+    if (currentSection) {
+      currentSection.blocks.push(block);
+      return;
+    }
+
+    leadBlocks.push(block);
+  });
+
+  if (currentSection) {
+    sections.push(currentSection);
+  }
+
+  let heroTitle: string | null = null;
+  const heroParagraphs: string[] = [];
+
+  leadBlocks.forEach((block, blockIndex) => {
+    const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+    if (!lines.length) return;
+    if (blockIndex === 0 && looksLikeHeroTitle(lines[0])) {
+      heroTitle = stripMarkdownDecorations(lines[0]);
+      if (lines.length > 1) {
+        heroParagraphs.push(stripMarkdownDecorations(lines.slice(1).join(" ")));
+      }
+      return;
+    }
+    heroParagraphs.push(stripMarkdownDecorations(lines.join(" ")));
+  });
+
+  const sectionModels: AnswerSectionModel[] = sections.flatMap((section, index) => {
+    if ("table" in section) {
+      return [{
+        id: `table-${index}`,
+        kind: "table",
+        title: "表格信息",
+        dayNumber: null,
+        paragraphs: [],
+        listItems: [],
+        table: section.table,
+      }];
+    }
+
+    const contentModel = buildSectionContent(section.blocks);
+    return [{
+      id: `section-${index}`,
+      kind: inferAnswerSectionKind(section.title),
+      title: stripMarkdownDecorations(section.title),
+      dayNumber: extractSectionDayNumber(section.title),
+      paragraphs: contentModel.paragraphs,
+      listItems: contentModel.listItems,
+      table: contentModel.tables[0],
+    }];
+  });
+
+  return {
+    hero: {
+      title: heroTitle,
+      paragraphs: heroParagraphs,
+    },
+    sections: sectionModels,
+  };
+}
+
+function renderInlineRichText(text: string, keyPrefix: string): ReactNode[] {
+  return stripMarkdownDecorations(text)
+    .split(/(\*\*[^*]+\*\*)/g)
+    .filter(Boolean)
+    .map((segment, index) => {
+      if (/^\*\*[^*]+\*\*$/.test(segment)) {
+        return <strong key={`${keyPrefix}-${index}`}>{segment.slice(2, -2)}</strong>;
+      }
+      return <Fragment key={`${keyPrefix}-${index}`}>{segment}</Fragment>;
+    });
+}
+
+function splitCardLine(value: string) {
+  const cleaned = stripMarkdownDecorations(value);
+  const timeMatch = cleaned.match(/^((?:[01]?\d|2[0-3]):[0-5]\d|上午|中午|下午|傍晚|晚上|夜间|全天|早上|午后|午间)[\s|丨/-]+(.+)$/);
+  if (timeMatch) {
+    const remainder = timeMatch[2].trim();
+    const dividerIndex = remainder.search(/[：:]/);
+    if (dividerIndex > 0) {
+      return {
+        eyebrow: timeMatch[1],
+        title: remainder.slice(0, dividerIndex).trim(),
+        detail: remainder.slice(dividerIndex + 1).trim(),
+      };
+    }
+    return {
+      eyebrow: timeMatch[1],
+      title: remainder,
+      detail: "",
+    };
+  }
+
+  const detailMatch = cleaned.match(/^([^：:]{1,24})[：:]\s*(.+)$/);
+  if (detailMatch) {
+    return {
+      eyebrow: null,
+      title: detailMatch[1].trim(),
+      detail: detailMatch[2].trim(),
+    };
+  }
+
+  return {
+    eyebrow: null,
+    title: cleaned,
+    detail: "",
+  };
+}
+
+function renderSectionParagraphs(paragraphs: string[], prefix: string) {
+  if (!paragraphs.length) return null;
+  return (
+    <div className="answer-prose-block">
+      {paragraphs.map((paragraph, index) => (
+        <p key={`${prefix}-paragraph-${index}`}>{renderInlineRichText(paragraph, `${prefix}-paragraph-${index}`)}</p>
+      ))}
+    </div>
   );
+}
+
+function buildPlaceActionPrompt(placeName: string, detail: string, dayNumber?: number | null) {
+  const scopedDay = dayNumber ? `Day ${dayNumber}` : "当前行程";
+  return [
+    `请把 ${placeName} 纳入${scopedDay}继续优化。`,
+    detail ? `地点说明：${stripMarkdownDecorations(detail)}` : "请结合当前攻略上下文补全这个地点的玩法与停留建议。",
+    "请同步重排交通衔接、预算分配、行程强度，并输出更新后的详细攻略、地点清单和地图主线。",
+  ].join("\n");
+}
+
+function AnswerRenderer({
+  content,
+  destinationCity,
+  itinerary,
+  onOpenMap,
+  onOpenRailway,
+  onOptimizePlace,
+}: {
+  content: string;
+  destinationCity?: string | null;
+  itinerary?: ItineraryBlock[] | null;
+  onOpenMap?: (payload: { day?: number; pointName?: string | null }) => void;
+  onOpenRailway?: (payload: { destination?: string | null; date?: string | null; hint?: string | null }) => void;
+  onOptimizePlace?: (payload: { placeName: string; detail: string; dayNumber?: number | null; itinerary?: ItineraryBlock[] | null; prompt: string }) => void;
+}) {
+  const model = useMemo(() => buildAnswerRenderModel(content), [content]);
 
   return (
-    <div className="answer-renderer">
-      {blocks.map((block, index) => {
-        if (/^#{1,4}\s+/.test(block)) {
-          return <h3 key={index}>{block.replace(/^#{1,4}\s+/, "")}</h3>;
-        }
-        if (block.startsWith("|") || block.includes("\n|")) {
+    <div className="answer-renderer answer-story">
+      {model.hero.title || model.hero.paragraphs.length ? (
+        <section className="answer-hero">
+          <div className="answer-hero-kicker">AI 规划正文</div>
+          {model.hero.title ? <h3>{model.hero.title}</h3> : null}
+          {model.hero.paragraphs.length ? (
+            <div className="answer-hero-summary">
+              {model.hero.paragraphs.map((paragraph, index) => (
+                <p key={`hero-${index}`}>{renderInlineRichText(paragraph, `hero-${index}`)}</p>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {model.sections.map((section, index) => {
+        if (section.kind === "table" && section.table) {
           return (
-            <pre className="answer-table" key={index}>
-              {block}
+            <pre className="answer-table" key={section.id}>
+              {section.table}
             </pre>
           );
         }
-        if (/^[-*]\s+/m.test(block)) {
+
+        if (section.kind === "overview") {
           return (
-            <ul key={index}>
-              {block
-                .split("\n")
-                .map((line) => line.replace(/^[-*]\s+/, "").trim())
-                .filter(Boolean)
-                .map((line) => (
-                  <li key={line}>{line.replace(/\*\*/g, "")}</li>
-                ))}
-            </ul>
+            <section className="answer-section-band tone-overview" key={section.id}>
+              <header className="answer-section-head">
+                <span className="answer-section-kicker">规划概览</span>
+                <h4>{section.title}</h4>
+              </header>
+              {renderSectionParagraphs(section.paragraphs, section.id)}
+              {section.listItems.length ? (
+                <div className="answer-overview-grid">
+                  {section.listItems.map((item, itemIndex) => (
+                    <article className="answer-overview-card" key={`${section.id}-item-${itemIndex}`}>
+                      <strong>{renderInlineRichText(item, `${section.id}-item-${itemIndex}`)}</strong>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
+            </section>
           );
         }
-        return <p key={index}>{block.replace(/\*\*/g, "")}</p>;
+
+        if (section.kind === "day") {
+          const dayBadge = section.title.match(/(Day\s*\d+|第[一二三四五六七八九十\d]+天)/i)?.[0] || `Day ${index + 1}`;
+          const dayTitle = section.title.replace(dayBadge, "").replace(/^[/｜|丨\s-]+/, "").trim() || "当日安排";
+          return (
+            <section className="answer-day-card" key={section.id}>
+              <header className="answer-section-head day">
+                <span className="answer-day-badge">{dayBadge}</span>
+                <div>
+                  <h4>{dayTitle}</h4>
+                  <p>围绕当天动线整理的执行方案与节奏建议</p>
+                </div>
+              </header>
+              {renderSectionParagraphs(section.paragraphs, section.id)}
+              {section.listItems.length ? (
+                <div className="answer-agenda-list">
+                  {section.listItems.map((item, itemIndex) => {
+                    const card = splitCardLine(item);
+                    return (
+                      <article className="answer-agenda-item" key={`${section.id}-agenda-${itemIndex}`}>
+                        <span>{String(itemIndex + 1).padStart(2, "0")}</span>
+                        <div>
+                          {card.eyebrow ? <em>{card.eyebrow}</em> : null}
+                          <strong>{renderInlineRichText(card.title, `${section.id}-agenda-title-${itemIndex}`)}</strong>
+                          {card.detail ? <p>{renderInlineRichText(card.detail, `${section.id}-agenda-detail-${itemIndex}`)}</p> : null}
+                          <div className="answer-inline-actions">
+                            <button
+                              type="button"
+                              className="answer-mini-action"
+                              onClick={() => onOpenMap?.({ day: section.dayNumber || undefined, pointName: card.title })}
+                              disabled={!onOpenMap}
+                            >
+                              <MapPinned size={14} />
+                              地图
+                            </button>
+                            <button
+                              type="button"
+                              className="answer-mini-action"
+                              onClick={() => onOptimizePlace?.({
+                                placeName: card.title,
+                                detail: card.detail,
+                                dayNumber: section.dayNumber,
+                                itinerary,
+                                prompt: buildPlaceActionPrompt(card.title, card.detail, section.dayNumber),
+                              })}
+                              disabled={!onOptimizePlace}
+                            >
+                              <Plus size={14} />
+                              继续优化
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </section>
+          );
+        }
+
+        if (section.kind === "place") {
+          return (
+            <section className="answer-section-band tone-place" key={section.id}>
+              <header className="answer-section-head">
+                <span className="answer-section-kicker">地点卡片</span>
+                <h4>{section.title}</h4>
+              </header>
+              {renderSectionParagraphs(section.paragraphs, section.id)}
+              {section.listItems.length ? (
+                <div className="answer-place-grid">
+                  {section.listItems.map((item, itemIndex) => {
+                    const card = splitCardLine(item);
+                    const actionPrompt = buildPlaceActionPrompt(card.title, card.detail, section.dayNumber);
+                    return (
+                      <article className="answer-place-card" key={`${section.id}-place-${itemIndex}`}>
+                        <div className="answer-place-index">{itemIndex + 1}</div>
+                        <div className="answer-place-copy">
+                          <strong>{renderInlineRichText(card.title, `${section.id}-place-title-${itemIndex}`)}</strong>
+                          {card.eyebrow ? <span>{card.eyebrow}</span> : null}
+                          {card.detail ? <p>{renderInlineRichText(card.detail, `${section.id}-place-detail-${itemIndex}`)}</p> : null}
+                          <div className="answer-place-actions">
+                            <button
+                              type="button"
+                              className="answer-mini-action"
+                              onClick={() => onOpenMap?.({ day: section.dayNumber || undefined, pointName: card.title })}
+                              disabled={!onOpenMap}
+                            >
+                              <MapPinned size={14} />
+                              地图
+                            </button>
+                            <button
+                              type="button"
+                              className="answer-mini-action"
+                              onClick={() => onOpenRailway?.({
+                                destination: destinationCity || card.title,
+                                date: null,
+                                hint: `${card.title} · ${card.detail || section.title}`,
+                              })}
+                              disabled={!onOpenRailway}
+                            >
+                              <TrainFront size={14} />
+                              铁路
+                            </button>
+                            <button
+                              type="button"
+                              className="answer-mini-action strong"
+                              onClick={() => onOptimizePlace?.({
+                                placeName: card.title,
+                                detail: card.detail,
+                                dayNumber: section.dayNumber,
+                                itinerary,
+                                prompt: actionPrompt,
+                              })}
+                              disabled={!onOptimizePlace}
+                            >
+                              <Plus size={14} />
+                              加入优化
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </section>
+          );
+        }
+
+        if (["budget", "transport", "rainy", "risk"].includes(section.kind)) {
+          return (
+            <section className={`answer-section-band answer-tip-panel tone-${section.kind}`} key={section.id}>
+              <header className="answer-section-head">
+                <span className="answer-section-kicker">专项建议</span>
+                <h4>{section.title}</h4>
+              </header>
+              {renderSectionParagraphs(section.paragraphs, section.id)}
+              {section.listItems.length ? (
+                <div className="answer-tip-list">
+                  {section.listItems.map((item, itemIndex) => (
+                    <article className="answer-tip-item" key={`${section.id}-tip-${itemIndex}`}>
+                      <strong>{renderInlineRichText(item, `${section.id}-tip-${itemIndex}`)}</strong>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          );
+        }
+
+        return (
+          <section className="answer-section-band tone-default" key={section.id}>
+            <header className="answer-section-head">
+              <span className="answer-section-kicker">正文</span>
+              <h4>{section.title}</h4>
+            </header>
+            {renderSectionParagraphs(section.paragraphs, section.id)}
+            {section.listItems.length ? (
+              <div className="answer-default-list">
+                {section.listItems.map((item, itemIndex) => (
+                  <div className="answer-default-list-item" key={`${section.id}-default-${itemIndex}`}>
+                    <span />
+                    <p>{renderInlineRichText(item, `${section.id}-default-${itemIndex}`)}</p>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        );
       })}
     </div>
   );

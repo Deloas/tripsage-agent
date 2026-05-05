@@ -38,6 +38,7 @@ import type {
   SharedPlan,
   StreamStage,
   StructuredTravelPlan,
+  TravelPlanView,
   ToolStatus,
   RailwayQueryResult,
   UserProfileUpdatePayload,
@@ -476,6 +477,7 @@ export async function buildAiMapWorkbench(payload: {
     items: Array<{ time?: string; title: string; detail: string }>;
   }> | null;
   structured_plan?: StructuredTravelPlan | null;
+  travel_plan_view?: TravelPlanView | null;
   mode?: string;
 }): Promise<AiMapWorkbenchResult> {
   return unwrapRaw(api.post<ApiResponse<AiMapWorkbenchResult>>("/tools/map/ai-workbench", payload, { timeout: 90000 }));

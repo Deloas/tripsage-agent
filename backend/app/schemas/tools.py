@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from app.schemas.chat import StructuredTravelPlan
+from app.schemas.chat import StructuredTravelPlan, TravelPlanView
 
 
 class WeatherRequest(BaseModel):
@@ -56,6 +56,8 @@ class AiMapWorkbenchRequest(BaseModel):
     answer: str = Field(default="", max_length=50000)
     itinerary: list[AiMapItineraryDay] = Field(default_factory=list)
     structured_plan: StructuredTravelPlan | None = None
+    # 中文注释：页面渲染层的结构化攻略会比长文本更稳定，地图工作台优先消费它。
+    travel_plan_view: TravelPlanView | None = None
     mode: str = "driving"
 
 

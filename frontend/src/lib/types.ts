@@ -60,6 +60,8 @@ export interface AiMapPoint {
   query: string;
   day?: number | null;
   source?: string | null;
+  candidate_order?: number;
+  candidate_priority?: number;
   city?: string | null;
   district?: string | null;
   address?: string | null;
@@ -70,6 +72,11 @@ export interface AiMapPoint {
   fallback?: boolean;
   confidence?: number;
   score?: number;
+  canonical_name?: string | null;
+  merged_names?: string[];
+  group_size?: number;
+  is_anchor?: boolean;
+  normalized_reason?: string | null;
 }
 
 export interface AiMapRouteLeg {
@@ -94,6 +101,7 @@ export interface AiMapWorkbenchResult {
   city?: string | null;
   mode: string;
   points: AiMapPoint[];
+  raw_points?: AiMapPoint[];
   routes: AiMapRouteLeg[];
   total_distance_meters: number;
   total_duration_minutes: number;
@@ -102,6 +110,7 @@ export interface AiMapWorkbenchResult {
   diagnostics: {
     candidate_count: number;
     resolved_count: number;
+    main_point_count?: number;
     has_js_key: boolean;
     web_service_configured: boolean;
   };
@@ -157,6 +166,77 @@ export interface StructuredTravelPlan {
   days: StructuredPlanDay[];
 }
 
+export interface TravelPlanOverview {
+  title: string;
+  summary: string;
+  highlights: string[];
+}
+
+export interface TravelPlanMapMarker {
+  day: number;
+  order?: number | null;
+  title: string;
+  address: string;
+  intro: string;
+}
+
+export interface TravelPlanMapSchedule {
+  city?: string | null;
+  title: string;
+  markers: TravelPlanMapMarker[];
+}
+
+export interface TravelPlanPoiCard {
+  name: string;
+  intro: string;
+  category?: string | null;
+  stay_text: string;
+  transport_hint: string;
+  tags: string[];
+  order?: number | null;
+}
+
+export interface TravelPlanDayView {
+  day: number;
+  title: string;
+  summary: string;
+  strategy: string;
+  route_digest: string;
+  route_points: string[];
+  transit_hint: string;
+  agenda: StructuredAgendaItem[];
+  pois: TravelPlanPoiCard[];
+}
+
+export interface TravelPlanBudgetItem {
+  name: string;
+  amount: string;
+  note: string;
+  ratio?: number | null;
+}
+
+export interface TravelPlanBudgetView {
+  summary: string;
+  total_hint: string;
+  items: TravelPlanBudgetItem[];
+}
+
+export interface TravelPlanSupplement {
+  title: string;
+  summary: string;
+  bullets: string[];
+  tone: "good" | "warn" | "info" | string;
+}
+
+export interface TravelPlanView {
+  overview: TravelPlanOverview;
+  map_schedule?: TravelPlanMapSchedule | null;
+  days: TravelPlanDayView[];
+  budget?: TravelPlanBudgetView | null;
+  supplements: TravelPlanSupplement[];
+  action_hints: string[];
+}
+
 export interface DecisionModule {
   type: "transport" | "rainy_day" | "intensity" | "budget" | "risk" | string;
   title: string;
@@ -173,6 +253,7 @@ export interface ChatResponse {
   cards: ResultCard[];
   itinerary?: ItineraryBlock[] | null;
   structured_plan?: StructuredTravelPlan | null;
+  travel_plan_view?: TravelPlanView | null;
   tool_calls: ToolCall[];
   sources: SourceRef[];
   warnings: string[];

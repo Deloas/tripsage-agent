@@ -1,6 +1,7 @@
 import { ArrowLeft, CalendarDays, DatabaseZap, Link2, TrainFront } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { TravelPlanWorkbench } from "./TravelPlanWorkbench";
 import { fetchSharedPlan } from "../lib/api";
 import type { SharedPlan } from "../lib/types";
 
@@ -64,6 +65,8 @@ export function SharedPlanPage({ shareId }: { shareId: string }) {
           </div>
         </div>
       </section>
+
+      {response.travel_plan_view ? <TravelPlanWorkbench view={response.travel_plan_view} /> : null}
 
       {itinerary.length ? (
         <section className="share-section">

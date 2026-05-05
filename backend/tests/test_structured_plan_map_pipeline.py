@@ -1,11 +1,16 @@
 from app.agents.nodes import (
+    _build_travel_plan_view,
     _build_structured_plan_fallback,
     _build_itinerary_from_structured_plan,
     _normalize_structured_plan,
     _render_structured_answer,
     _rerank_guides_for_destination,
 )
-from app.api.tools import _extract_structured_map_candidates
+from app.api.tools import (
+    _extract_render_plan_map_candidates,
+    _extract_structured_map_candidates,
+    _normalize_ai_map_points,
+)
 from app.schemas.tools import AiMapWorkbenchRequest
 
 
@@ -129,6 +134,43 @@ def test_structured_map_candidates_prioritize_plan_places() -> None:
     assert any(item["name"] == "OCT-LOFT" for item in candidates)
 
 
+def test_render_plan_map_candidates_prefer_map_schedule() -> None:
+    """页面渲染层若已经给出地图主线，应优先复用而不是退回长文本猜地点。"""
+    payload = AiMapWorkbenchRequest.model_validate(
+        {
+            "city": "杭州",
+            "answer": "这里故意放一些长文本噪音，不应该影响地图主线。",
+            "itinerary": [],
+            "travel_plan_view": {
+                "overview": {
+                    "title": "杭州两日游",
+                    "summary": "西湖与夜景主线",
+                    "highlights": ["西湖", "夜景"],
+                },
+                "map_schedule": {
+                    "city": "杭州",
+                    "title": "杭州两日游地图主线",
+                    "markers": [
+                        {"day": 1, "order": 1, "title": "西湖", "address": "杭州", "intro": "白天主线"},
+                        {"day": 1, "order": 2, "title": "湖滨步行街", "address": "杭州", "intro": "夜景和美食"},
+                        {"day": 2, "order": 1, "title": "灵隐飞来峰", "address": "杭州", "intro": "第二天核心"},
+                    ],
+                },
+                "days": [],
+                "supplements": [],
+                "action_hints": [],
+            },
+            "mode": "driving",
+        }
+    )
+
+    candidates = _extract_render_plan_map_candidates(payload)
+
+    assert len(candidates) == 3
+    assert [item["name"] for item in candidates] == ["西湖", "湖滨步行街", "灵隐飞来峰"]
+    assert all(item["source"] == "travel_plan_view" for item in candidates)
+
+
 def test_structured_fallback_prefers_real_place_pool() -> None:
     """兜底结构应优先使用真实地点池，而不是退回到抽象占位词。"""
     state = {
@@ -190,3 +232,71 @@ def test_destination_rerank_filters_false_positive_guides() -> None:
 
     assert ranked
     assert ranked[0].model_dump()["title"] == "深圳两日游夜景美食攻略"
+
+
+def test_map_point_normalization_merges_sub_pois() -> None:
+    """地图主线归一化应把同一景点的子点折叠成一个主景点。"""
+    payload = AiMapWorkbenchRequest.model_validate(
+        {
+            "city": "深圳",
+            "answer": "",
+            "itinerary": [],
+            "structured_plan": {
+                "city": "深圳",
+                "days": [
+                    {
+                        "day": 1,
+                        "title": "夜景线",
+                        "summary": "",
+                        "route_digest": "莲花山公园 -> 海上世界",
+                        "agenda": [],
+                        "places": [
+                            {"name": "莲花山公园", "aliases": [], "intro": "", "order": 1},
+                            {"name": "海上世界", "aliases": [], "intro": "", "order": 2},
+                        ],
+                    }
+                ],
+            },
+            "mode": "driving",
+        }
+    )
+
+    raw_points = [
+        {
+            "name": "莲花山公园",
+            "query": "莲花山公园",
+            "day": 1,
+            "candidate_order": 0,
+            "candidate_priority": 180,
+            "type": "风景名胜;公园广场;公园",
+            "score": 31.8,
+            "location": "114.058673,22.553594",
+        },
+        {
+            "name": "莲花山公园山顶广场",
+            "query": "莲花山公园山顶",
+            "day": 1,
+            "candidate_order": 1,
+            "candidate_priority": 180,
+            "type": "风景名胜;公园广场;公园广场",
+            "score": 16.3,
+            "location": "114.059469,22.553186",
+        },
+        {
+            "name": "海上世界",
+            "query": "海上世界",
+            "day": 1,
+            "candidate_order": 2,
+            "candidate_priority": 180,
+            "type": "风景名胜;风景名胜;风景名胜",
+            "score": 31.8,
+            "location": "113.917846,22.482264",
+        },
+    ]
+
+    normalized = _normalize_ai_map_points(raw_points, payload)
+
+    assert len(normalized) == 2
+    assert normalized[0]["name"] == "莲花山公园"
+    assert normalized[0]["group_size"] == 2
+    assert "莲花山公园山顶广场" in normalized[0]["merged_names"]
