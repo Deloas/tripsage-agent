@@ -37,7 +37,7 @@ TRANSPORT_PATTERNS = {
 }
 
 PACE_PATTERNS = {
-    "轻松": ["轻松", "悠闲", "慢游", "慢慢逛", "宽松", "不赶"],
+    "轻松": ["轻松", "悠闲", "慢游", "慢慢逛", "宽松", "不赶", "不想太赶", "别太赶"],
     "紧凑": ["紧凑", "高密度", "特种兵", "多打卡", "早出晚归"],
     "深度体验": ["深度", "沉浸", "深度体验"],
     "亲子友好": ["亲子", "带娃", "适合小朋友"],
@@ -57,8 +57,10 @@ INTEREST_PATTERNS = {
 
 NEGATIVE_PATTERNS = {
     "早班车": ["不要早班车", "别太早出发", "不想太早出发", "不想早起", "睡到自然醒"],
-    "高强度": ["不要太赶", "别太赶", "不要特种兵", "不想排太满", "不要高强度"],
+    "高强度": ["不要太赶", "别太赶", "不想太赶", "不要特种兵", "不想排太满", "不要高强度"],
     "步行过多": ["少走路", "不要走太多路", "别走太多路"],
+    "爬山过多": ["别安排太多爬山", "不要爬山", "不想爬山", "少爬山", "爬山少一点", "减少爬山", "避免爬山", "不安排爬山"],
+    "徒步过多": ["不要徒步", "不想徒步", "少徒步", "减少徒步", "避免徒步"],
     "打车过多": ["少打车", "不要老打车", "不想一直打车"],
     "商业化景点": ["不要太商业", "不想去太商业化", "别太商业"],
     "折返": ["不要折返", "别折返", "不想来回跑"],
@@ -813,11 +815,21 @@ class PreferenceService:
     def _extract_from_text(self, text: str, source_type: str) -> list[PreferenceSignal]:
         lowered = self._normalize_text(text)
         signals: list[PreferenceSignal] = []
+        origin_cities, route_destination_cities = self._extract_route_cities(text)
 
         for city in CITY_WORDS:
             if city not in text:
                 continue
-            confidence = 0.82 if f"去{city}" in text or f"{city}怎么玩" in text else 0.58
+            # “从上海去杭州”这类表达中，上海是出发地，不应被误沉淀为偏好目的地。
+            if source_type == "user_message" and city in origin_cities and city not in route_destination_cities:
+                continue
+            confidence = (
+                0.92
+                if city in route_destination_cities
+                else 0.82
+                if f"去{city}" in text or f"{city}怎么玩" in text
+                else 0.58
+            )
             signals.append(
                 PreferenceSignal(
                     dimension="destination",
@@ -826,6 +838,7 @@ class PreferenceService:
                     confidence=confidence,
                     weight=SOURCE_WEIGHTS[source_type],
                     raw_text=text,
+                    metadata={"role": "destination" if city in route_destination_cities else "mentioned_city"},
                 )
             )
 
@@ -858,7 +871,7 @@ class PreferenceService:
                 )
 
         for value, patterns in INTEREST_PATTERNS.items():
-            if self._contains_any(lowered, patterns):
+            if self._contains_any(lowered, patterns) and not self._is_interest_negative(lowered, patterns, value):
                 signals.append(
                     PreferenceSignal(
                         dimension="interest",
@@ -2039,6 +2052,45 @@ class PreferenceService:
     def _contains_any(self, text: str, patterns: list[str]) -> bool:
         return any(pattern.lower() in text for pattern in patterns)
 
+    def _extract_route_cities(self, text: str) -> tuple[set[str], set[str]]:
+        """识别“从 A 去/到 B”中的出发地和目的地，避免把出发地写入目的地画像。"""
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        origins: set[str] = set()
+        destinations: set[str] = set()
+        city_group = "|".join(re.escape(city) for city in CITY_WORDS)
+        route_patterns = (
+            rf"从(?P<origin>.{{0,8}}?(?:{city_group}).{{0,4}}?)(?:出发)?(?:去|到|前往|游玩|玩)(?P<destination>.{{0,8}}?(?:{city_group}).{{0,8}}?)",
+            rf"(?P<origin>{city_group})(?:出发)?(?:去|到|前往)(?P<destination>.{{0,8}}?(?:{city_group}).{{0,8}}?)",
+        )
+        for pattern in route_patterns:
+            for match in re.finditer(pattern, normalized):
+                origin_city = self._first_city_in_text(match.group("origin"))
+                destination_city = self._first_city_in_text(match.group("destination"))
+                if origin_city and destination_city and origin_city != destination_city:
+                    origins.add(origin_city)
+                    destinations.add(destination_city)
+        return origins, destinations
+
+    def _first_city_in_text(self, text: str) -> str | None:
+        """按文本出现位置返回第一个城市名。"""
+        ranked = [(str(text).find(city), city) for city in CITY_WORDS if city in str(text)]
+        ranked = [item for item in ranked if item[0] >= 0]
+        if not ranked:
+            return None
+        return sorted(ranked, key=lambda item: item[0])[0][1]
+
+    def _is_interest_negative(self, text: str, patterns: list[str], value: str) -> bool:
+        """识别“不想徒步/少爬山”等否定兴趣，避免误加正向自然偏好。"""
+        cues = [pattern.lower() for pattern in patterns]
+        if value == "自然":
+            cues.extend(["爬山", "登山", "徒步", "山路"])
+        negative_prefixes = ("不要", "不想", "别", "少", "减少", "避免", "不安排", "别安排", "别安排太多")
+        for cue in cues:
+            for prefix in negative_prefixes:
+                if f"{prefix}{cue}" in text:
+                    return True
+        return False
+
     def _is_transport_negative(self, text: str, patterns: list[str]) -> bool:
         negative_prefixes = ("不要", "不坐", "别坐", "不想坐", "避免")
         for pattern in patterns:
@@ -2066,6 +2118,9 @@ class PreferenceService:
         for left, right in re.findall(r"([0-9]{2,6})\s*[-~到]\s*([0-9]{2,6})", text):
             values.append(int((int(left) + int(right)) / 2))
         for value in re.findall(r"(?:预算\s*)?([0-9]{2,6})\s*元", text):
+            values.append(int(value))
+        # 兼容“预算2000左右/预算 2000 上下”这类没有写“元”的自然表达。
+        for value in re.findall(r"预算\s*([0-9]{2,6})\s*(?:左右|上下|以内|以下|预算内)?", text):
             values.append(int(value))
         return list(dict.fromkeys(values))
 

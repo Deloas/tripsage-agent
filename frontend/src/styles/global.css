@@ -11035,13 +11035,33 @@ button:disabled {
 
 .guide-import-history-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 8px;
   align-items: start;
   padding: 10px;
   border: 1px solid oklch(23% 0.022 166 / 0.07);
   border-radius: var(--radius-control);
   background: oklch(99% 0.006 96 / 0.84);
+}
+
+.guide-import-history-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.guide-import-history-main p {
+  margin: 3px 0 0;
+  overflow: hidden;
+  color: var(--color-ink-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .guide-import-history-item.active {
@@ -11080,7 +11100,6 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 8px;
 }
 
 .guide-import-history-actions button {
@@ -11095,8 +11114,23 @@ button:disabled {
   cursor: pointer;
 }
 
+.guide-import-history-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .guide-import-history-actions button:hover:not(:disabled) {
   background: oklch(96% 0.016 248 / 0.84);
+}
+
+.guide-import-history-actions button.danger {
+  border-color: oklch(50% 0.14 28 / 0.18);
+  color: oklch(42% 0.13 28);
+}
+
+.guide-import-history-actions button.danger:hover:not(:disabled) {
+  background: oklch(96% 0.03 28 / 0.78);
 }
 
 .guide-import-history-actions button:disabled {
@@ -11113,6 +11147,33 @@ button:disabled {
   background:
     linear-gradient(180deg, oklch(99% 0.012 82 / 0.92), oklch(97% 0.018 248 / 0.12)),
     oklch(100% 0 0 / 0.76);
+}
+
+.guide-import-detail-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.secondary-action.compact {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.secondary-action.danger {
+  border-color: oklch(50% 0.14 28 / 0.2);
+  color: oklch(42% 0.13 28);
+}
+
+.secondary-action.danger:hover:not(:disabled) {
+  background: oklch(96% 0.03 28 / 0.8);
+}
+
+.primary-action.compact {
+  min-height: 32px;
+  padding: 0 11px;
+  font-size: 12px;
 }
 
 .guide-import-history-detail-head {
@@ -11187,6 +11248,50 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.guide-import-record-preview {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid oklch(47% 0.1 164 / 0.16);
+  border-radius: var(--radius-control);
+  background:
+    linear-gradient(135deg, oklch(98% 0.014 164 / 0.8), oklch(100% 0 0 / 0.78)),
+    oklch(100% 0 0 / 0.72);
+}
+
+.guide-import-record-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.guide-import-record-preview-head span {
+  display: block;
+  color: var(--color-ink-muted);
+  font-size: 11px;
+}
+
+.guide-import-record-preview-head strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--color-ink);
+  font-size: 13px;
+}
+
+.guide-import-record-preview-body {
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid oklch(23% 0.022 166 / 0.08);
+  border-radius: 12px;
+  background: oklch(100% 0 0 / 0.72);
+  color: var(--color-ink);
+  font-size: 12px;
+  line-height: 1.78;
+  white-space: pre-wrap;
 }
 
 .guide-import-inline-media-strip {
@@ -11681,6 +11786,7 @@ button:disabled {
 
 .planner-workstation.is-message-focus {
   gap: 12px;
+  min-block-size: calc(100vh - 118px);
 }
 
 .planner-workstation-bar,
@@ -11750,6 +11856,7 @@ button:disabled {
 .planner-workstation.is-message-focus .planner-bar-copy p {
   font-size: 13px;
   line-height: 1.5;
+  -webkit-line-clamp: 1;
 }
 
 .planner-bar-side {
@@ -11952,7 +12059,7 @@ button:disabled {
 
 .planner-workstation.is-message-focus .planner-workstation-grid {
   gap: 12px;
-  height: clamp(620px, calc(100vh - 192px), 980px);
+  height: clamp(760px, calc(100vh - 134px), 1120px);
 }
 
 .planner-primary-surface,
@@ -11969,7 +12076,7 @@ button:disabled {
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   align-content: stretch;
-  padding: 14px;
+  padding: 12px;
 }
 
 .planner-surface-head {
@@ -12059,10 +12166,10 @@ button:disabled {
 }
 
 .planner-workstation.is-message-focus .planner-dispatch-rail {
-  gap: 10px;
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-radius: 18px;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 7px 9px;
+  border-radius: 16px;
 }
 
 .planner-workstation.is-message-focus .planner-dispatch-title strong {
@@ -12111,8 +12218,12 @@ button:disabled {
 }
 
 .planner-workstation.is-message-focus .planner-dispatch-card {
-  min-width: 178px;
-  padding: 8px 10px;
+  min-width: 164px;
+  padding: 7px 9px;
+}
+
+.planner-workstation.is-message-focus .planner-dispatch-card span {
+  line-height: 1.35;
 }
 
 .planner-dispatch-card strong,
@@ -12198,8 +12309,8 @@ button:disabled {
 }
 
 .planner-workstation.is-message-focus .planner-message-surface.featured {
-  padding: 12px 12px 10px;
-  border-radius: 20px;
+  padding: 10px;
+  border-radius: 18px;
   box-shadow:
     inset 0 1px 0 oklch(100% 0 0 / 0.78),
     0 16px 34px oklch(23% 0.022 166 / 0.04);
@@ -12215,7 +12326,7 @@ button:disabled {
 .planner-workstation.is-message-focus .planner-message-head {
   position: static;
   gap: 12px;
-  padding-bottom: 8px;
+  padding-bottom: 6px;
   border-bottom: 1px solid oklch(23% 0.022 166 / 0.06);
   background: transparent;
 }
@@ -12225,8 +12336,7 @@ button:disabled {
 }
 
 .planner-workstation.is-message-focus .planner-message-head span {
-  margin-top: 2px;
-  font-size: 11px;
+  display: none;
 }
 
 .planner-message-head strong {
@@ -12290,9 +12400,9 @@ button:disabled {
 }
 
 .planner-workstation.is-message-focus .planner-message-scroll {
-  min-height: 0;
+  min-height: clamp(360px, 48vh, 720px);
   padding-right: 6px;
-  padding-bottom: 8px;
+  padding-bottom: 6px;
 }
 
 .planner-message-list {
@@ -12301,15 +12411,15 @@ button:disabled {
 }
 
 .planner-workstation.is-message-focus .planner-message-list {
-  gap: 10px;
-  padding-bottom: 12px;
+  gap: 9px;
+  padding-bottom: 8px;
 }
 
 .planner-message-footer {
   position: relative;
   display: grid;
-  gap: 10px;
-  padding-top: 6px;
+  gap: 8px;
+  padding-top: 4px;
 }
 
 .planner-message-float-stack {
@@ -12497,7 +12607,7 @@ button:disabled {
 
 .planner-composer-shell.message-embedded {
   margin-top: 0;
-  padding: 12px;
+  padding: 10px;
   border: 1px solid oklch(23% 0.022 166 / 0.08);
   border-radius: 18px;
   background:
@@ -12520,8 +12630,8 @@ button:disabled {
 }
 
 .planner-composer-shell.message-embedded textarea {
-  min-height: 96px;
-  max-height: 176px;
+  min-height: 58px;
+  max-height: 120px;
   border-color: oklch(23% 0.022 166 / 0.12);
   background: oklch(100% 0 0 / 0.94);
   color: var(--color-ink);
@@ -12540,7 +12650,7 @@ button:disabled {
 
 .planner-composer-shell.message-mode {
   margin-top: 10px;
-  padding: 12px;
+  padding: 10px;
   border: 1px solid oklch(23% 0.022 166 / 0.08);
   border-radius: 20px;
   background:
@@ -12625,8 +12735,8 @@ button:disabled {
 }
 
 .planner-composer-shell.message-mode textarea {
-  min-height: 92px;
-  max-height: 168px;
+  min-height: 58px;
+  max-height: 120px;
   border-color: oklch(23% 0.022 166 / 0.12);
   background: oklch(100% 0 0 / 0.92);
   color: var(--color-ink);
@@ -12660,6 +12770,22 @@ button:disabled {
   background: linear-gradient(135deg, var(--color-rust), oklch(39% 0.08 24));
   color: var(--color-paper);
   box-shadow: 0 14px 28px oklch(55% 0.13 43 / 0.2);
+}
+
+.planner-workstation.is-message-focus .planner-composer {
+  grid-template-columns: minmax(0, 1fr) 50px;
+  gap: 10px;
+}
+
+.planner-workstation.is-message-focus .planner-composer-meta {
+  display: none;
+  margin-bottom: 0;
+}
+
+.planner-workstation.is-message-focus .planner-composer button {
+  width: 50px;
+  height: 50px;
+  border-radius: 16px;
 }
 
 .planner-secondary-summary {
@@ -13361,6 +13487,20 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .planner-workstation.is-message-focus .planner-workstation-grid {
+    height: auto;
+    grid-template-rows: auto auto;
+  }
+
+  .planner-workstation.is-message-focus .planner-primary-surface {
+    height: clamp(920px, calc(100vh - 72px), 1120px);
+    min-height: 0;
+  }
+
+  .planner-workstation.is-message-focus .planner-secondary-surface {
+    min-height: 560px;
+  }
+
   .planner-bar-side {
     justify-items: start;
   }
@@ -13401,6 +13541,10 @@ button:disabled {
   .planner-secondary-surface {
     height: auto;
     min-height: 620px;
+  }
+
+  .planner-workstation.is-message-focus .planner-primary-surface {
+    min-height: clamp(700px, calc(100vh - 88px), 1040px);
   }
 }
 

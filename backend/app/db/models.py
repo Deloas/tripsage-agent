@@ -109,6 +109,11 @@ class GuideImportRecord(Base):
     reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
     quality_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     diagnostics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structured_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    resolved_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    author: Mapped[str | None] = mapped_column(String(120), nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 

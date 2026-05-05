@@ -633,6 +633,11 @@ export interface GuideImportRecordItem {
   message?: string | null;
   quality?: GuideLinkImportResult["quality"];
   diagnostics?: GuideLinkImportResult["diagnostics"];
+  content?: string | null;
+  structured?: GuideStructuredDraft | null;
+  category?: string | null;
+  resolved_url?: string | null;
+  author?: string | null;
   created_at?: string | null;
 }
 

@@ -28,6 +28,7 @@ import {
   crawlWeiboGuides,
   confirmGuideLink,
   deleteConversation,
+  deleteGuideImportRecord,
   exportPlanVersion,
   fetchAuthSessions,
   fetchConversationDetail,
@@ -362,6 +363,20 @@ export default function App() {
       setGuideImportRecords(records);
     } catch {
       setGuideImportRecords([]);
+    }
+  }
+
+  async function handleDeleteGuideImportRecord(recordId: number) {
+    try {
+      await deleteGuideImportRecord(recordId);
+      setGuideImportRecords((current) => current.filter((item) => item.id !== recordId));
+      if (guideImportRecordSelection === recordId) {
+        setGuideImportRecordSelection(null);
+      }
+      setGuideResult("导入记录已删除，已入库攻略不会受影响。");
+      await refreshGuideImportRecords();
+    } catch {
+      setGuideResult("导入记录删除失败，请确认后端服务已启动。");
     }
   }
 
@@ -1434,6 +1449,7 @@ export default function App() {
         importRecords={guideImportRecords}
         importTasks={guideImportTasks}
         activeImportTask={activeGuideImportTask}
+        onDeleteImportRecord={handleDeleteGuideImportRecord}
         onUseImportedGuide={handleUseGuideInPlanning}
         onOptimizeImportedGuide={handleOptimizeImportedGuide}
         onSetPrimaryGuide={handleSetGuideAsPrimaryReference}

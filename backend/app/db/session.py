@@ -69,6 +69,25 @@ def _ensure_sqlite_compatible_columns() -> None:
         },
         "guide_import_records": {
             "mode": "TEXT DEFAULT 'link'",
+            "content": "TEXT",
+            "structured_json": "TEXT",
+            "category": "TEXT",
+            "resolved_url": "TEXT",
+            "author": "TEXT",
+        },
+        "guide_import_tasks": {
+            "category": "TEXT",
+            "force_reimport": "INTEGER DEFAULT 0",
+            "mode": "TEXT DEFAULT 'preview'",
+            "status": "TEXT DEFAULT 'queued'",
+            "stage": "TEXT DEFAULT 'queued'",
+            "progress": "INTEGER DEFAULT 5",
+            "title": "TEXT",
+            "message": "TEXT",
+            "result_json": "TEXT",
+            "error_message": "TEXT",
+            "updated_at": "TIMESTAMP",
+            "finished_at": "TIMESTAMP",
         },
     }
 

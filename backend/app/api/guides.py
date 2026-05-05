@@ -75,6 +75,15 @@ def list_guide_import_records(
     return ok({"items": items, "total": total, "limit": limit, "offset": offset})
 
 
+@router.delete("/guides/import-records/{record_id}")
+def delete_guide_import_record(record_id: int, db: Session = Depends(get_db)):
+    """删除单条攻略导入记录；不删除已入库攻略，避免误伤知识库内容。"""
+    deleted = GuideLinkImportService(db).delete_import_record(record_id)
+    if not deleted:
+        return fail(4040, "未找到对应的导入记录", {"record_id": record_id})
+    return ok(deleted)
+
+
 @router.post("/guides")
 def create_guide(payload: GuideCreateRequest, db: Session = Depends(get_db)):
     """新增攻略并写入知识库。"""

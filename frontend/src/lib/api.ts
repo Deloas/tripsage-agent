@@ -438,6 +438,10 @@ export async function fetchGuideImportRecords(): Promise<GuideImportRecordItem[]
   ).then((data) => data.items);
 }
 
+export async function deleteGuideImportRecord(recordId: number): Promise<GuideImportRecordItem & { deleted: boolean }> {
+  return unwrapRaw(api.delete<ApiResponse<GuideImportRecordItem & { deleted: boolean }>>(`/guides/import-records/${recordId}`));
+}
+
 export async function crawlWeiboGuides(): Promise<Record<string, unknown>> {
   return unwrapRaw(api.post<ApiResponse<Record<string, unknown>>>("/guides/crawl/weibo"));
 }

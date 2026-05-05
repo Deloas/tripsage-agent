@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import ROOT_DIR
-from app.db.models import Guide, GuideImportRecord, GuideSource
+from app.db.models import Guide, GuideImportRecord, GuideImportTask, GuideSource
 from app.schemas.guides import GuideCreateRequest, GuideLinkImportConfirmRequest, GuideLinkImportRequest
 from app.services.guide_ocr_service import GuideOcrService
 from app.services.guide_ingest_service import (
@@ -380,6 +380,16 @@ class GuideLinkImportService:
             .all()
         )
         return [self._record_to_dict(record) for record in records], int(total or 0)
+
+    def delete_import_record(self, record_id: int) -> dict[str, Any] | None:
+        """删除单条导入记录；只清理导入历史，不删除已入库攻略正文。"""
+        record = self.db.get(GuideImportRecord, record_id)
+        if not record:
+            return None
+        result = self._record_to_dict(record)
+        self.db.delete(record)
+        self.db.commit()
+        return {**result, "deleted": True}
 
     async def fetch_page_snapshot(self, url: str, source_type: str | None = None) -> FetchedGuidePage:
         """给其它服务复用的公开抓取入口。"""
@@ -1649,6 +1659,13 @@ class GuideLinkImportService:
                 diagnostics_json=(
                     json.dumps(result.get("diagnostics"), ensure_ascii=False) if result.get("diagnostics") else None
                 ),
+                content=str(result.get("content") or "") if result.get("content") else None,
+                structured_json=(
+                    json.dumps(result.get("structured"), ensure_ascii=False) if result.get("structured") else None
+                ),
+                category=(str(result.get("category"))[:120] if result.get("category") else None),
+                resolved_url=(str(result.get("resolved_url"))[:1000] if result.get("resolved_url") else None),
+                author=(str(result.get("author"))[:120] if result.get("author") else None),
                 message=str(result.get("message") or "")[:1000] if result.get("message") else None,
             )
             self.db.add(record)
@@ -1661,6 +1678,7 @@ class GuideLinkImportService:
 
     def _record_to_dict(self, record: GuideImportRecord) -> dict[str, Any]:
         """把数据库记录转换为前端稳定 schema。"""
+        fallback_preview = self._load_preview_from_task(record.url) if not record.content else {}
         return {
             "id": record.id,
             "url": record.url,
@@ -1674,8 +1692,31 @@ class GuideLinkImportService:
             "message": record.message,
             "quality": self._loads_json(record.quality_json),
             "diagnostics": self._loads_json(record.diagnostics_json),
+            "content": record.content or fallback_preview.get("content"),
+            "structured": self._loads_json(record.structured_json) or fallback_preview.get("structured"),
+            "category": record.category or fallback_preview.get("category"),
+            "resolved_url": record.resolved_url or fallback_preview.get("resolved_url"),
+            "author": record.author or fallback_preview.get("author"),
             "created_at": record.created_at.isoformat() if record.created_at else None,
         }
+
+    def _load_preview_from_task(self, url: str) -> dict[str, Any]:
+        """兼容旧导入记录：从同链接的后台任务结果中恢复可编辑预览正文。"""
+        task = (
+            self.db.execute(
+                select(GuideImportTask)
+                .where(GuideImportTask.url == url)
+                .where(GuideImportTask.result_json.is_not(None))
+                .order_by(GuideImportTask.created_at.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if not task or not task.result_json:
+            return {}
+        data = self._loads_json(task.result_json)
+        return data if isinstance(data, dict) else {}
 
     def _loads_json(self, value: str | None) -> Any:
         """安全读取 JSON 字段，兼容旧记录或异常写入。"""
