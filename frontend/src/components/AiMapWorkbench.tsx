@@ -408,6 +408,73 @@ export function AiMapWorkbench({ latest, messages, onPrompt, onFocusChange, focu
     ].join("\n"));
   }
 
+  function buildDayRouteDigest(dayCard?: RouteDayCard | null) {
+    if (!dayCard) return "当前未识别出可用的分日路线。";
+    return [
+      `Day ${dayCard.day} 主线：${dayCard.points.length ? dayCard.points.join(" -> ") : "待补充"}`,
+      `当天通勤：${formatMeters(dayCard.totalDistance)} / ${formatMinutes(dayCard.totalDuration)}`,
+    ].join("\n");
+  }
+
+  function sendFocusAlternativeToAgent(point: AiMapPoint) {
+    const dayCard =
+      typeof point.day === "number"
+        ? routeDayCards.find((item) => item.day === point.day) || null
+        : selectedDay !== "all"
+          ? routeDayCards.find((item) => item.day === selectedDay) || null
+          : null;
+    onPrompt([
+      `请围绕地点「${point.name}」寻找 2-3 个更顺路的附近备选，并替换进当前旅行方案。`,
+      `目的地城市：${point.city || mapData?.city || city || "待确认"}`,
+      `目标点位类型：${point.type || point.source || "旅行地点"}`,
+      `当前定位日程：${typeof point.day === "number" ? `Day ${point.day}` : "全局主线"}`,
+      buildDayRouteDigest(dayCard),
+      "请保持预算、旅行节奏和核心偏好基本不变。",
+      "输出要求：更新后的详细攻略正文 + 新的当天地点顺序 + 适合地图工作台识别的主线路线。",
+    ].join("\n"));
+  }
+
+  function sendFocusReorderToAgent(point: AiMapPoint) {
+    const dayCard =
+      typeof point.day === "number"
+        ? routeDayCards.find((item) => item.day === point.day) || null
+        : selectedDay !== "all"
+          ? routeDayCards.find((item) => item.day === selectedDay) || null
+          : null;
+    onPrompt([
+      `请重新整理 ${typeof point.day === "number" ? `Day ${point.day}` : "当前主线"} 的出行顺序，重点减少折返和空跑。`,
+      `优先关注地点：${point.name}`,
+      buildDayRouteDigest(dayCard),
+      "请保留用户当前偏好的高铁、美食、夜景、舒缓节奏等特征。",
+      "输出要求：完整优化版详细攻略 + 当天顺序精简清单 + 地图主线。",
+    ].join("\n"));
+  }
+
+  function sendDayCompressionToAgent(dayCard: RouteDayCard) {
+    onPrompt([
+      `请压缩 Day ${dayCard.day} 的整体通勤成本，并优化当天行程强度。`,
+      buildDayRouteDigest(dayCard),
+      "请优先通过调整顺序、替换过远点位、合并同片区活动来缩短路程。",
+      "输出要求：更新后的详细攻略正文 + 调整原因 + 新的地图主线。",
+    ].join("\n"));
+  }
+
+  function sendLegCompressionToAgent(leg: AiMapRouteLeg) {
+    const dayCard =
+      typeof leg.origin.day === "number"
+        ? routeDayCards.find((item) => item.day === leg.origin.day) || null
+        : typeof leg.destination.day === "number"
+          ? routeDayCards.find((item) => item.day === leg.destination.day) || null
+          : null;
+    onPrompt([
+      `当前存在一段偏长通勤：${leg.origin.name} -> ${leg.destination.name}`,
+      `当前耗时与距离：${formatMeters(leg.distance_meters)} / ${formatMinutes(leg.duration_minutes)}`,
+      buildDayRouteDigest(dayCard),
+      "请给出更短的替代安排，可通过交换顺序、替换其中一个点位、拆分到其他时段等方式完成。",
+      "输出要求：详细攻略正文保留完整度，同时给出新的精简路线主线。",
+    ].join("\n"));
+  }
+
   function handleSelectPoint(point: AiMapPoint) {
     setPointMode("main");
     setLocalFocusName(point.name);
@@ -566,6 +633,10 @@ export function AiMapWorkbench({ latest, messages, onPrompt, onFocusChange, focu
                     <button type="button" className="travel-inline-action subtle" onClick={() => sendDayRouteToAgent(item.day)}>
                       优化这一天
                     </button>
+                    <button type="button" className="travel-inline-action subtle" onClick={() => sendDayCompressionToAgent(item)}>
+                      <Route size={14} />
+                      压缩通勤
+                    </button>
                   </div>
                 </article>
               ))}
@@ -607,6 +678,14 @@ export function AiMapWorkbench({ latest, messages, onPrompt, onFocusChange, focu
                 <button type="button" className="travel-inline-action subtle" onClick={() => handleSelectPoint(focusSummaryPoint)}>
                   <LocateFixed size={14} />
                   高亮定位
+                </button>
+                <button type="button" className="travel-inline-action subtle" onClick={() => sendFocusAlternativeToAgent(focusSummaryPoint)}>
+                  <Layers3 size={14} />
+                  附近备选
+                </button>
+                <button type="button" className="travel-inline-action subtle" onClick={() => sendFocusReorderToAgent(focusSummaryPoint)}>
+                  <GitBranch size={14} />
+                  调整顺序
                 </button>
                 <button type="button" className="travel-inline-action subtle" onClick={() => void copyShareLink()}>
                   <Copy size={14} />
@@ -679,6 +758,10 @@ export function AiMapWorkbench({ latest, messages, onPrompt, onFocusChange, focu
                     <Milestone size={14} />
                     优化这一段
                   </button>
+                  <button type="button" className="travel-inline-action subtle" onClick={() => sendLegCompressionToAgent(leg)}>
+                    <Route size={14} />
+                    缩短通勤
+                  </button>
                 </div>
               </article>
             ))}
@@ -698,10 +781,16 @@ export function AiMapWorkbench({ latest, messages, onPrompt, onFocusChange, focu
                     {formatMeters(selectedRouteLeg.distance_meters)} / {formatMinutes(selectedRouteLeg.duration_minutes)} / {selectedRouteLeg.mode_used || selectedRouteLeg.mode || "driving"}
                   </span>
                 </div>
-                <button type="button" className="travel-inline-action subtle" onClick={() => sendLegToAgent(selectedRouteLeg)}>
-                  <SendHorizonal size={14} />
-                  回写智能体
-                </button>
+                <div className="ai-map-step-actions">
+                  <button type="button" className="travel-inline-action subtle" onClick={() => sendLegCompressionToAgent(selectedRouteLeg)}>
+                    <Route size={14} />
+                    缩短这一段
+                  </button>
+                  <button type="button" className="travel-inline-action subtle" onClick={() => sendLegToAgent(selectedRouteLeg)}>
+                    <SendHorizonal size={14} />
+                    回写智能体
+                  </button>
+                </div>
               </div>
               <div className="ai-map-step-list">
                 {(selectedRouteLeg.steps || []).length ? (

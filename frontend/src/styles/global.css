@@ -818,6 +818,13 @@ button:disabled {
   gap: 8px;
 }
 
+.ai-map-focus-actions .travel-inline-action,
+.ai-map-route-actions .travel-inline-action,
+.ai-map-step-actions .travel-inline-action {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
 .ai-map-stat-grid span,
 .ai-map-poi-card em,
 .ai-map-route-card span {
@@ -970,6 +977,8 @@ button:disabled {
 
 .ai-map-route-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-end;
 }
 
@@ -987,6 +996,13 @@ button:disabled {
   justify-content: space-between;
   gap: 12px;
   align-items: flex-start;
+}
+
+.ai-map-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .ai-map-step-head span {
