@@ -457,7 +457,7 @@ def _build_planner_prompt(state: TripAgentState) -> str:
         edited_plan=context.get("edited_plan"),
         preference_profile=context.get("preference_profile"),
         planning_place_pool=state.get("planning_place_pool") or [],
-    )
+    ) + _planner_product_contract()
 
 
 def _build_planner_text_prompt(state: TripAgentState) -> str:
@@ -476,7 +476,32 @@ def _build_planner_text_prompt(state: TripAgentState) -> str:
         edited_plan=context.get("edited_plan"),
         preference_profile=context.get("preference_profile"),
         planning_place_pool=state.get("planning_place_pool") or [],
-    )
+    ) + _planner_text_product_contract()
+
+
+def _planner_product_contract() -> str:
+    """中文注释：追加稳定的产品级 JSON 契约，避免改动旧提示词主体时受编码影响。"""
+    return """
+
+产品级结构化输出补充契约：
+- 每个 days[] 必须包含 agenda、places、route_nodes、food_plan、transport_plan、budget_plan、pace_level、weather_backup、risk_notes。
+- route_nodes 是地图工作台的唯一主线依据，必须覆盖当天 agenda 中出现的每一个真实景点、街区、商圈、餐饮区域、车站或码头；不要放“午餐”“预算”“地铁”等非地点词。
+- places 负责地点卡片展示，route_nodes 负责地图路线；二者顺序应与当天实际游玩顺序一致，缺一不可。
+- food_plan 至少写 lunch、dinner，并补充 recommendations；transport_plan.segments 必须按相邻 route_nodes 写 origin、destination、mode、hint。
+- budget_plan.summary 要说明当天主要花费；pace_level 用“轻松/适中/偏满”表达强度；weather_backup 和 risk_notes 必须是数组。
+- 自然语言攻略可以详细、有温度，但 JSON 必须严谨，地图节点不得靠长文本猜测。
+"""
+
+
+def _planner_text_product_contract() -> str:
+    """中文注释：追加自然语言输出契约，保证正文详细且不牺牲地图结构。"""
+    return """
+
+自然语言正文补充要求：
+- 每天正文必须同时包含：详细日程、美食安排、交通方式、预算与强度、雨天备选、风险提醒。
+- 每天结尾必须保留“当天地点清单”和“当天地点简介”，地点名称要与结构化 route_nodes 完全一致，便于地图工作台联动。
+- 不要把回答压缩成只有景点列表；应给出为什么这么排、怎么走、在哪里吃、预算如何控制、哪些地方需要预约或错峰。
+"""
 
 
 def _normalize_structured_plan(payload: dict, state: TripAgentState) -> StructuredTravelPlan | None:
@@ -509,6 +534,8 @@ def _normalize_structured_plan(payload: dict, state: TripAgentState) -> Structur
                     "stay_minutes": _coerce_int(raw_place.get("stay_minutes")),
                     "transport_hint": str(raw_place.get("transport_hint") or "").strip()[:120] or None,
                     "order": _coerce_int(raw_place.get("order")) or place_index,
+                    "map_required": bool(raw_place.get("map_required", True)),
+                    "source_agenda_title": str(raw_place.get("source_agenda_title") or "").strip()[:120] or None,
                 }
             )
 
@@ -532,6 +559,11 @@ def _normalize_structured_plan(payload: dict, state: TripAgentState) -> Structur
 
         if not places and agenda:
             places = _derive_places_from_agenda(agenda)
+        route_nodes = _normalize_route_nodes(raw_day, agenda, places)
+        if not places and route_nodes:
+            places = route_nodes
+        elif route_nodes:
+            places = _merge_place_lists(places, route_nodes)[:10]
 
         normalized_days.append(
             {
@@ -541,6 +573,13 @@ def _normalize_structured_plan(payload: dict, state: TripAgentState) -> Structur
                 "route_digest": str(raw_day.get("route_digest") or "").strip()[:240],
                 "agenda": agenda[:10],
                 "places": places[:10],
+                "route_nodes": route_nodes[:12],
+                "food_plan": _normalize_food_plan(raw_day),
+                "transport_plan": _normalize_transport_plan(raw_day, route_nodes or places),
+                "budget_plan": _normalize_day_budget_plan(raw_day, state),
+                "pace_level": _normalize_text(raw_day.get("pace_level"))[:60] or _infer_day_pace(raw_day, len(route_nodes or places)),
+                "weather_backup": _normalize_text_list(raw_day.get("weather_backup"), 5, 160) or _default_weather_backup(payload, raw_day),
+                "risk_notes": _normalize_text_list(raw_day.get("risk_notes"), 5, 160) or _default_risk_notes(payload, raw_day),
             }
         )
 
@@ -594,6 +633,192 @@ def _derive_places_from_agenda(agenda: list[dict]) -> list[dict]:
             }
         )
     return places
+
+
+def _normalize_text_list(value: object, limit: int = 5, max_length: int = 160) -> list[str]:
+    """中文注释：把模型可能输出的字符串或数组统一成前端可直接渲染的短句数组。"""
+    if isinstance(value, str):
+        raw_items = re.split(r"[；;\n]", value)
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+    result: list[str] = []
+    for item in raw_items:
+        text = _normalize_text(item)
+        if text and text not in result:
+            result.append(text[:max_length])
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _merge_place_lists(primary: list[dict], secondary: list[dict]) -> list[dict]:
+    """中文注释：合并地点与地图节点，避免地图漏掉日程里出现的真实地点。"""
+    result: list[dict] = []
+    seen: set[str] = set()
+    for item in [*primary, *secondary]:
+        name = _normalize_text(item.get("name"))
+        key = _normalize_compact(name)
+        if not name or not key or key in seen or _looks_generic_place(name):
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _coerce_place_payload(raw_place: dict, place_index: int, source_title: str | None = None) -> dict | None:
+    name = _normalize_text(raw_place.get("name") or raw_place.get("title") or raw_place.get("place_name"))
+    if not name or _looks_generic_place(name):
+        return None
+    aliases = [
+        _normalize_text(item)
+        for item in (raw_place.get("aliases") or [])
+        if _normalize_text(item) and _normalize_text(item) != name and not _looks_generic_place(_normalize_text(item))
+    ]
+    return {
+        "name": name[:80],
+        "aliases": aliases[:4],
+        "intro": _normalize_text(raw_place.get("intro") or raw_place.get("detail"))[:240],
+        "category": _normalize_text(raw_place.get("category") or raw_place.get("type"))[:40] or None,
+        "stay_minutes": _coerce_int(raw_place.get("stay_minutes")),
+        "transport_hint": _normalize_text(raw_place.get("transport_hint"))[:120] or None,
+        "order": _coerce_int(raw_place.get("order")) or place_index,
+        "map_required": bool(raw_place.get("map_required", True)),
+        "source_agenda_title": _normalize_text(raw_place.get("source_agenda_title") or source_title)[:120] or None,
+    }
+
+
+def _normalize_route_nodes(raw_day: dict, agenda: list[dict], places: list[dict]) -> list[dict]:
+    """中文注释：地图主线节点优先来自 route_nodes，并自动补齐 agenda/places 中出现的真实地点。"""
+    nodes: list[dict] = []
+    for index, raw_node in enumerate(raw_day.get("route_nodes") or [], start=1):
+        if isinstance(raw_node, str):
+            raw_node = {"name": raw_node, "order": index}
+        if not isinstance(raw_node, dict):
+            continue
+        node = _coerce_place_payload(raw_node, index)
+        if node:
+            nodes.append(node)
+
+    for place in places:
+        node = _coerce_place_payload(place, _coerce_int(place.get("order")) or len(nodes) + 1)
+        if node:
+            nodes.append(node)
+
+    for item in agenda:
+        name = _normalize_text(item.get("place_name") or item.get("title"))
+        if not name or _looks_generic_place(name):
+            continue
+        nodes.append(
+            {
+                "name": name[:80],
+                "aliases": [],
+                "intro": _normalize_text(item.get("detail"))[:240],
+                "category": None,
+                "stay_minutes": None,
+                "transport_hint": _normalize_text(item.get("transport_hint"))[:120] or None,
+                "order": len(nodes) + 1,
+                "map_required": True,
+                "source_agenda_title": _normalize_text(item.get("title"))[:120] or None,
+            }
+        )
+    repaired = _merge_place_lists([], nodes)
+    for index, node in enumerate(repaired, start=1):
+        node["order"] = index
+    return repaired
+
+
+def _normalize_food_plan(raw_day: dict) -> dict:
+    food = raw_day.get("food_plan") if isinstance(raw_day.get("food_plan"), dict) else {}
+    recommendations = _normalize_text_list(food.get("recommendations") or raw_day.get("food_recommendations"), 6, 120)
+    snacks = _normalize_text_list(food.get("snacks") or raw_day.get("snacks"), 6, 120)
+    if not any([food.get("breakfast"), food.get("lunch"), food.get("dinner"), snacks, recommendations]):
+        return {
+            "breakfast": "按住宿位置就近安排，减少早晨折返。",
+            "lunch": "优先选择当日主线附近的本地餐馆或小吃街。",
+            "dinner": "结合夜景或商圈安排晚餐，避免晚间跨城折返。",
+            "snacks": [],
+            "recommendations": [],
+        }
+    return {
+        "breakfast": _normalize_text(food.get("breakfast"))[:160],
+        "lunch": _normalize_text(food.get("lunch"))[:160],
+        "dinner": _normalize_text(food.get("dinner"))[:160],
+        "snacks": snacks,
+        "recommendations": recommendations,
+    }
+
+
+def _normalize_transport_plan(raw_day: dict, route_nodes: list[dict]) -> dict:
+    transport = raw_day.get("transport_plan") if isinstance(raw_day.get("transport_plan"), dict) else {}
+    segments: list[dict] = []
+    for index, raw_segment in enumerate(transport.get("segments") or [], start=1):
+        if not isinstance(raw_segment, dict):
+            continue
+        segments.append(
+            {
+                "origin": _normalize_text(raw_segment.get("origin"))[:80],
+                "destination": _normalize_text(raw_segment.get("destination"))[:80],
+                "mode": _normalize_text(raw_segment.get("mode"))[:40],
+                "hint": _normalize_text(raw_segment.get("hint"))[:160],
+            }
+        )
+    if not segments and len(route_nodes) >= 2:
+        for origin, destination in zip(route_nodes, route_nodes[1:]):
+            segments.append(
+                {
+                    "origin": origin["name"],
+                    "destination": destination["name"],
+                    "mode": "地铁/步行/短途打车",
+                    "hint": destination.get("transport_hint") or "以地图工作台实时路径为准，优先减少折返。",
+                }
+            )
+    return {
+        "arrival": _normalize_text(transport.get("arrival"))[:160],
+        "city_transport": _normalize_text(transport.get("city_transport") or raw_day.get("transit_hint"))[:200],
+        "segments": segments[:10],
+    }
+
+
+def _normalize_day_budget_plan(raw_day: dict, state: TripAgentState) -> dict:
+    budget = raw_day.get("budget_plan") if isinstance(raw_day.get("budget_plan"), dict) else {}
+    items = budget.get("items") if isinstance(budget.get("items"), list) else []
+    normalized_items: list[dict] = []
+    for item in items[:6]:
+        if not isinstance(item, dict):
+            continue
+        normalized_items.append(
+            {
+                "name": _normalize_text(item.get("name"))[:40],
+                "amount": _normalize_text(item.get("amount"))[:60],
+                "note": _normalize_text(item.get("note"))[:120],
+                "ratio": item.get("ratio") if isinstance(item.get("ratio"), (int, float)) else None,
+            }
+        )
+    summary = _normalize_text(budget.get("summary") or raw_day.get("budget_hint"))[:200]
+    if not summary:
+        budget_value = _parse_budget_value((state.get("slots") or {}).get("budget"))
+        summary = f"按总预算约 {budget_value} 元控制单日消费，优先保证交通、住宿与核心体验。" if budget_value else "单日预算待结合住宿和门票继续细化。"
+    return {"summary": summary, "items": normalized_items}
+
+
+def _infer_day_pace(raw_day: dict, node_count: int) -> str:
+    if node_count <= 2:
+        return "轻松"
+    if node_count <= 4:
+        return "适中"
+    return "偏满，建议保留机动时间"
+
+
+def _default_weather_backup(payload: dict, raw_day: dict) -> list[str]:
+    hint = _normalize_text(raw_day.get("rainy_day_hint") or payload.get("rainy_day_hint"))
+    return [hint] if hint else ["遇到降雨时优先切换到室内馆区、商圈、茶馆或展览空间。"]
+
+
+def _default_risk_notes(payload: dict, raw_day: dict) -> list[str]:
+    hint = _normalize_text(raw_day.get("risk_hint") or payload.get("risk_hint"))
+    return [hint] if hint else ["热门点位建议提前预约，并在地图工作台确认实时交通时间。"]
 
 
 def _coerce_int(value: object) -> int | None:
@@ -862,9 +1087,61 @@ def _looks_like_rich_planning_answer(answer: str | None) -> bool:
     )
 
 
+def _rich_answer_has_empty_place_sections(answer: str) -> bool:
+    """中文注释：识别“地点清单/地点简介”标题存在但正文为空的坏答案，避免前端出现空白模块。"""
+    lines = [_normalize_text(line) for line in answer.splitlines()]
+    section_break_pattern = re.compile(
+        r"^(?:Day\s*\d+|第\s*[\u4e00-\u9fff0-9]+\s*天|预算提示|交通建议|雨天备选|风险提醒|出行提醒|上午|中午|下午|傍晚|晚上|夜间|全天|早上|午后|午间|(?:[01]?\d|2[0-3]):[0-5]\d)",
+        re.IGNORECASE,
+    )
+    place_heading_pattern = re.compile(r"^(?:当天地点清单|地点清单|当天地点简介|地点简介|景点清单|景点简介)\s*[:：]?\s*$")
+
+    for index, raw_line in enumerate(lines):
+        plain = raw_line.replace("**", "").strip("-* ").strip()
+        if not plain or not place_heading_pattern.match(plain):
+            continue
+        next_line = ""
+        for candidate in lines[index + 1:]:
+            candidate_plain = candidate.replace("**", "").strip("-* ").strip()
+            if candidate_plain:
+                next_line = candidate_plain
+                break
+        if not next_line:
+            return True
+        if place_heading_pattern.match(next_line) or section_break_pattern.match(next_line):
+            return True
+    return False
+
+
+def _should_keep_rich_answer(answer: str | None, plan: StructuredTravelPlan, state: TripAgentState) -> bool:
+    """中文注释：只有当富文本答案结构完整时才直接采用，否则回退到稳定结构化渲染。"""
+    if not _looks_like_rich_planning_answer(answer):
+        return False
+
+    normalized = _normalize_text(answer)
+    if _rich_answer_has_empty_place_sections(normalized):
+        return False
+    if not all(section in normalized for section in ["美食安排", "交通方式"]):
+        return False
+
+    section_plan = _build_structured_plan_from_sections(normalized, state)
+    if not section_plan or not section_plan.days:
+        return False
+
+    expected_day_count = len(plan.days)
+    candidate_days = section_plan.days[:expected_day_count] if expected_day_count else section_plan.days
+    if expected_day_count and len(candidate_days) < expected_day_count:
+        return False
+
+    complete_days = sum(1 for day in candidate_days if day.agenda and day.places)
+    if complete_days < len(candidate_days):
+        return False
+    return True
+
+
 def _compose_planner_answer(plan: StructuredTravelPlan, state: TripAgentState, rich_answer: str | None = None) -> str:
     """????????????????????????????????????"""
-    if _looks_like_rich_planning_answer(rich_answer):
+    if _should_keep_rich_answer(rich_answer, plan, state):
         return _normalize_text(rich_answer)
     return _render_structured_answer(plan, state)
 
@@ -1063,6 +1340,41 @@ def _render_structured_answer(plan: StructuredTravelPlan, state: TripAgentState)
                 suffix = f" ({place.transport_hint})" if place.transport_hint else ""
                 lines.append(f"{index}. {place.name}: {intro}{suffix}")
 
+        day_food_items = [
+            item
+            for item in [day.food_plan.breakfast, day.food_plan.lunch, day.food_plan.dinner, *day.food_plan.recommendations[:3]]
+            if item
+        ]
+        if day_food_items:
+            lines.append("")
+            lines.append(f"**Day {day.day} 美食安排**")
+            for item in day_food_items:
+                lines.append(f"- {item}")
+
+        transport_segments = day.transport_plan.segments[:5]
+        if day.transport_plan.city_transport or transport_segments:
+            lines.append("")
+            lines.append(f"**Day {day.day} 交通方式**")
+            if day.transport_plan.city_transport:
+                lines.append(f"- {day.transport_plan.city_transport}")
+            for segment in transport_segments:
+                label = " -> ".join([part for part in [segment.origin, segment.destination] if part])
+                hint = segment.hint or segment.mode
+                if label and hint:
+                    lines.append(f"- {label}: {hint}")
+
+        if day.budget_plan.summary or day.pace_level or day.weather_backup or day.risk_notes:
+            lines.append("")
+            lines.append(f"**Day {day.day} 预算、强度与备选**")
+            if day.budget_plan.summary:
+                lines.append(f"- 预算: {day.budget_plan.summary}")
+            if day.pace_level:
+                lines.append(f"- 强度: {day.pace_level}")
+            for item in day.weather_backup[:2]:
+                lines.append(f"- 雨天备选: {item}")
+            for item in day.risk_notes[:2]:
+                lines.append(f"- 风险提醒: {item}")
+
     hint_sections = [
         ("\u9884\u7b97\u63d0\u793a", plan.budget_hint),
         ("\u4ea4\u901a\u5efa\u8bae", plan.transport_hint),
@@ -1191,9 +1503,10 @@ def _build_travel_plan_view(plan: StructuredTravelPlan | None, state: TripAgentS
     markers: list[TravelPlanMapMarker] = []
     for day in plan.days:
         pois: list[TravelPlanPoiCard] = []
-        route_points = [place.name for place in day.places[:8]]
+        day_nodes = day.route_nodes or day.places
+        route_points = [place.name for place in day_nodes[:12]]
         transport_hints: list[str] = []
-        for place in day.places[:8]:
+        for place in day_nodes[:12]:
             stay_text = f"{place.stay_minutes} 分钟" if place.stay_minutes else ""
             tags = [item for item in [place.category, stay_text] if item]
             if place.transport_hint:
@@ -1245,6 +1558,15 @@ def _build_travel_plan_view(plan: StructuredTravelPlan | None, state: TripAgentS
 
         transit_hint = "；".join(dict.fromkeys([item for item in transport_hints if item]))[:160]
         strategy = day.summary or day.route_digest or f"Day {day.day} 以 {city} 的核心体验为主，控制节奏，减少无效折返。"
+        if day.transport_plan.city_transport:
+            transit_hint = day.transport_plan.city_transport[:160]
+        map_required_count = sum(1 for place in day_nodes if place.map_required)
+        map_node_count = len([place for place in day_nodes if place.name])
+        map_completeness = (
+            f"完整：{map_node_count}/{map_required_count or map_node_count} 个地图节点"
+            if map_required_count <= map_node_count
+            else f"待补齐：{map_node_count}/{map_required_count} 个地图节点"
+        )
         day_views.append(
             TravelPlanDayView(
                 day=day.day,
@@ -1256,6 +1578,15 @@ def _build_travel_plan_view(plan: StructuredTravelPlan | None, state: TripAgentS
                 transit_hint=transit_hint,
                 agenda=day.agenda[:10],
                 pois=pois,
+                food_plan=day.food_plan,
+                transport_plan=day.transport_plan,
+                budget_plan=day.budget_plan,
+                pace_level=day.pace_level,
+                weather_backup=day.weather_backup,
+                risk_notes=day.risk_notes,
+                map_node_count=map_node_count,
+                map_required_count=map_required_count,
+                map_completeness=map_completeness,
             )
         )
 

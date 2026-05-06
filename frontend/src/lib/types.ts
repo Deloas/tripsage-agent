@@ -144,6 +144,39 @@ export interface StructuredPlaceBrief {
   stay_minutes?: number | null;
   transport_hint?: string | null;
   order?: number | null;
+  map_required?: boolean;
+  source_agenda_title?: string | null;
+}
+
+export interface StructuredTransportSegment {
+  origin?: string;
+  destination?: string;
+  mode?: string;
+  hint?: string;
+}
+
+export interface StructuredDayTransportPlan {
+  arrival?: string;
+  city_transport?: string;
+  segments: StructuredTransportSegment[];
+}
+
+export interface StructuredFoodPlan {
+  breakfast?: string;
+  lunch?: string;
+  dinner?: string;
+  snacks: string[];
+  recommendations: string[];
+}
+
+export interface StructuredBudgetPlan {
+  summary?: string;
+  items: Array<{
+    name?: string;
+    amount?: string;
+    note?: string;
+    ratio?: number | null;
+  }>;
 }
 
 export interface StructuredPlanDay {
@@ -153,6 +186,13 @@ export interface StructuredPlanDay {
   route_digest?: string;
   agenda: StructuredAgendaItem[];
   places: StructuredPlaceBrief[];
+  route_nodes?: StructuredPlaceBrief[];
+  food_plan?: StructuredFoodPlan;
+  transport_plan?: StructuredDayTransportPlan;
+  budget_plan?: StructuredBudgetPlan;
+  pace_level?: string;
+  weather_backup?: string[];
+  risk_notes?: string[];
 }
 
 export interface StructuredTravelPlan {
@@ -206,6 +246,15 @@ export interface TravelPlanDayView {
   transit_hint: string;
   agenda: StructuredAgendaItem[];
   pois: TravelPlanPoiCard[];
+  food_plan?: StructuredFoodPlan;
+  transport_plan?: StructuredDayTransportPlan;
+  budget_plan?: StructuredBudgetPlan;
+  pace_level?: string;
+  weather_backup?: string[];
+  risk_notes?: string[];
+  map_node_count?: number;
+  map_required_count?: number;
+  map_completeness?: string;
 }
 
 export interface TravelPlanBudgetItem {

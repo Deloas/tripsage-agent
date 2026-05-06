@@ -40,6 +40,42 @@ class StructuredPlaceBrief(BaseModel):
     stay_minutes: int | None = Field(default=None, ge=0, le=1440)
     transport_hint: str | None = Field(default=None, max_length=120)
     order: int | None = Field(default=None, ge=1, le=20)
+    map_required: bool = True
+    source_agenda_title: str | None = Field(default=None, max_length=120)
+
+
+class StructuredTransportSegment(BaseModel):
+    """中文注释：单日内相邻地点之间的交通建议。"""
+
+    origin: str = Field(default="", max_length=80)
+    destination: str = Field(default="", max_length=80)
+    mode: str = Field(default="", max_length=40)
+    hint: str = Field(default="", max_length=160)
+
+
+class StructuredDayTransportPlan(BaseModel):
+    """中文注释：单日交通方案，给前端和地图工作台直接消费。"""
+
+    arrival: str = Field(default="", max_length=160)
+    city_transport: str = Field(default="", max_length=200)
+    segments: list[StructuredTransportSegment] = Field(default_factory=list)
+
+
+class StructuredFoodPlan(BaseModel):
+    """中文注释：单日美食安排，避免攻略只剩景点。"""
+
+    breakfast: str = Field(default="", max_length=160)
+    lunch: str = Field(default="", max_length=160)
+    dinner: str = Field(default="", max_length=160)
+    snacks: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+
+
+class StructuredBudgetPlan(BaseModel):
+    """中文注释：单日预算拆分，便于前端显示成本判断。"""
+
+    summary: str = Field(default="", max_length=200)
+    items: list[dict] = Field(default_factory=list)
 
 
 class StructuredPlanDay(BaseModel):
@@ -51,6 +87,13 @@ class StructuredPlanDay(BaseModel):
     route_digest: str = Field(default="", max_length=240)
     agenda: list[StructuredAgendaItem] = Field(default_factory=list)
     places: list[StructuredPlaceBrief] = Field(default_factory=list)
+    route_nodes: list[StructuredPlaceBrief] = Field(default_factory=list)
+    food_plan: StructuredFoodPlan = Field(default_factory=StructuredFoodPlan)
+    transport_plan: StructuredDayTransportPlan = Field(default_factory=StructuredDayTransportPlan)
+    budget_plan: StructuredBudgetPlan = Field(default_factory=StructuredBudgetPlan)
+    pace_level: str = Field(default="", max_length=60)
+    weather_backup: list[str] = Field(default_factory=list)
+    risk_notes: list[str] = Field(default_factory=list)
 
 
 class StructuredTravelPlan(BaseModel):
@@ -116,6 +159,15 @@ class TravelPlanDayView(BaseModel):
     transit_hint: str = Field(default="", max_length=160)
     agenda: list[StructuredAgendaItem] = Field(default_factory=list)
     pois: list[TravelPlanPoiCard] = Field(default_factory=list)
+    food_plan: StructuredFoodPlan = Field(default_factory=StructuredFoodPlan)
+    transport_plan: StructuredDayTransportPlan = Field(default_factory=StructuredDayTransportPlan)
+    budget_plan: StructuredBudgetPlan = Field(default_factory=StructuredBudgetPlan)
+    pace_level: str = Field(default="", max_length=60)
+    weather_backup: list[str] = Field(default_factory=list)
+    risk_notes: list[str] = Field(default_factory=list)
+    map_node_count: int = Field(default=0, ge=0, le=50)
+    map_required_count: int = Field(default=0, ge=0, le=50)
+    map_completeness: str = Field(default="", max_length=80)
 
 
 class TravelPlanBudgetItem(BaseModel):

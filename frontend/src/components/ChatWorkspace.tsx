@@ -42,6 +42,7 @@ import type {
   PlanVersionCompare,
   RailwayTrain,
   StreamStage,
+  TravelPlanView,
 } from "../lib/types";
 import type { PlanningPromptCard } from "../lib/personalization";
 
@@ -560,6 +561,7 @@ export function ChatWorkspace({
                             <AnswerRenderer
                               content={message.content}
                               destinationCity={destinationCity}
+                              travelPlanView={latest?.travel_plan_view}
                               itinerary={latest?.itinerary}
                               onOpenMap={onOpenMapFromPlan}
                               onOpenRailway={onOpenRailwayFromPlan}
@@ -772,6 +774,7 @@ export function ChatWorkspace({
               <AnswerRenderer
                 content={readerMessage.content}
                 destinationCity={destinationCity}
+                travelPlanView={latest?.travel_plan_view}
                 itinerary={latest?.itinerary}
                 onOpenMap={onOpenMapFromPlan}
                 onOpenRailway={onOpenRailwayFromPlan}
@@ -1702,9 +1705,21 @@ function buildPlaceActionPrompt(placeName: string, detail: string, dayNumber?: n
   ].join("\n");
 }
 
+function isEmptyPlaceSubheadingParagraph(text: string) {
+  const cleaned = stripMarkdownDecorations(text).replace(/\s+/g, "").replace(/[：:]/g, "");
+  if (!cleaned) return false;
+  return /^(当天地点清单|地点清单|当天地点简介|地点简介|景点清单|景点简介)+$/.test(cleaned);
+}
+
+function resolveFallbackDayPlaces(view: TravelPlanView | null | undefined, dayNumber?: number | null) {
+  if (!view || !dayNumber) return [];
+  return view.days.find((day) => day.day === dayNumber)?.pois || [];
+}
+
 function AnswerRenderer({
   content,
   destinationCity,
+  travelPlanView,
   itinerary,
   onOpenMap,
   onOpenRailway,
@@ -1712,6 +1727,7 @@ function AnswerRenderer({
 }: {
   content: string;
   destinationCity?: string | null;
+  travelPlanView?: TravelPlanView | null;
   itinerary?: ItineraryBlock[] | null;
   onOpenMap?: (payload: { day?: number; pointName?: string | null }) => void;
   onOpenRailway?: (payload: { destination?: string | null; date?: string | null; hint?: string | null }) => void;
@@ -1768,6 +1784,9 @@ function AnswerRenderer({
         if (section.kind === "day") {
           const dayBadge = section.title.match(/(Day\s*\d+|第[一二三四五六七八九十\d]+天)/i)?.[0] || `Day ${index + 1}`;
           const dayTitle = section.title.replace(dayBadge, "").replace(/^[/｜|丨\s-]+/, "").trim() || "当日安排";
+          const filteredParagraphs = section.paragraphs.filter((paragraph) => !isEmptyPlaceSubheadingParagraph(paragraph));
+          const fallbackPois = resolveFallbackDayPlaces(travelPlanView, section.dayNumber);
+          const shouldRenderFallbackPois = fallbackPois.length > 0 && filteredParagraphs.length !== section.paragraphs.length;
           return (
             <section className="answer-day-card" key={section.id}>
               <header className="answer-section-head day">
@@ -1777,7 +1796,63 @@ function AnswerRenderer({
                   <p>围绕当天动线整理的执行方案与节奏建议</p>
                 </div>
               </header>
-              {renderSectionParagraphs(section.paragraphs, section.id)}
+              {renderSectionParagraphs(filteredParagraphs, section.id)}
+              {shouldRenderFallbackPois ? (
+                <div className="answer-place-grid">
+                  {fallbackPois.map((poi, poiIndex) => {
+                    const actionPrompt = buildPlaceActionPrompt(poi.name, poi.intro, section.dayNumber);
+                    return (
+                      <article className="answer-place-card" key={`${section.id}-fallback-poi-${poi.name}-${poiIndex}`}>
+                        <div className="answer-place-index">{poiIndex + 1}</div>
+                        <div className="answer-place-copy">
+                          <strong>{poi.name}</strong>
+                          <span>{poi.category || "当日地点"}</span>
+                          {poi.intro ? <p>{poi.intro}</p> : null}
+                          <div className="answer-place-actions">
+                            <button
+                              type="button"
+                              className="answer-mini-action"
+                              onClick={() => onOpenMap?.({ day: section.dayNumber || undefined, pointName: poi.name })}
+                              disabled={!onOpenMap}
+                            >
+                              <MapPinned size={14} />
+                              地图
+                            </button>
+                            <button
+                              type="button"
+                              className="answer-mini-action"
+                              onClick={() => onOpenRailway?.({
+                                destination: destinationCity || poi.name,
+                                date: null,
+                                hint: `${poi.name} · ${poi.intro || dayTitle}`,
+                              })}
+                              disabled={!onOpenRailway}
+                            >
+                              <TrainFront size={14} />
+                              铁路
+                            </button>
+                            <button
+                              type="button"
+                              className="answer-mini-action strong"
+                              onClick={() => onOptimizePlace?.({
+                                placeName: poi.name,
+                                detail: poi.intro,
+                                dayNumber: section.dayNumber,
+                                itinerary,
+                                prompt: actionPrompt,
+                              })}
+                              disabled={!onOptimizePlace}
+                            >
+                              <Plus size={14} />
+                              加入优化
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : null}
               {section.listItems.length ? (
                 <div className="answer-agenda-list">
                   {section.listItems.map((item, itemIndex) => {

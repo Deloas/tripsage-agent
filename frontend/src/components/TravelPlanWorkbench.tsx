@@ -2,11 +2,16 @@ import {
   BadgeDollarSign,
   CloudRain,
   Compass,
+  Gauge,
+  CheckCircle2,
   MapPinned,
   Route,
+  ShieldAlert,
   Sparkles,
   Target,
   TrainFront,
+  Utensils,
+  WalletCards,
 } from "lucide-react";
 
 import type { TravelPlanSupplement, TravelPlanView } from "../lib/types";
@@ -61,6 +66,10 @@ function inferRailwayDate(view: TravelPlanView) {
     .trim();
   const matched = joined.match(/\d{4}-\d{1,2}-\d{1,2}|\d{1,2}月\d{1,2}日|五一|十一|国庆|端午|中秋|周末/);
   return matched?.[0] || null;
+}
+
+function compactItems(items: Array<string | undefined | null>) {
+  return items.map((item) => String(item || "").trim()).filter(Boolean);
 }
 
 export function TravelPlanWorkbench({
@@ -152,7 +161,14 @@ export function TravelPlanWorkbench({
               {day.route_points.length ? (
                 <div className="travel-route-strip">
                   {day.route_points.map((point) => (
-                    <span key={`${day.day}-${point}`}>{point}</span>
+                    <button
+                      type="button"
+                      key={`${day.day}-${point}`}
+                      onClick={() => onOpenMap?.({ day: day.day, pointName: point })}
+                      disabled={!onOpenMap}
+                    >
+                      {point}
+                    </button>
                   ))}
                 </div>
               ) : null}
@@ -161,6 +177,88 @@ export function TravelPlanWorkbench({
                 <div className="travel-inline-note">
                   <TrainFront size={14} />
                   <span>{day.transit_hint}</span>
+                </div>
+              ) : null}
+
+              <div className="travel-day-intel-grid" aria-label={`Day ${day.day} 决策信息`}>
+                <article>
+                  <div>
+                    <Utensils size={14} />
+                    <strong>美食</strong>
+                  </div>
+                  <p>
+                    {compactItems([
+                      day.food_plan?.lunch,
+                      day.food_plan?.dinner,
+                      ...(day.food_plan?.recommendations || []).slice(0, 2),
+                    ]).join(" / ") || "结合当日路线就近安排本地餐饮。"}
+                  </p>
+                </article>
+                <article>
+                  <div>
+                    <TrainFront size={14} />
+                    <strong>交通</strong>
+                  </div>
+                  <p>
+                    {day.transport_plan?.city_transport ||
+                      day.transport_plan?.segments?.[0]?.hint ||
+                      day.transit_hint ||
+                      "以地图工作台实时路线为准。"}
+                  </p>
+                </article>
+                <article>
+                  <div>
+                    <WalletCards size={14} />
+                    <strong>预算</strong>
+                  </div>
+                  <p>{day.budget_plan?.summary || "待结合住宿、门票与餐饮继续细化。"}</p>
+                </article>
+                <article>
+                  <div>
+                    <Gauge size={14} />
+                    <strong>强度</strong>
+                  </div>
+                  <p>{day.pace_level || "适中"}</p>
+                </article>
+                <article>
+                  <div>
+                    <CloudRain size={14} />
+                    <strong>雨天备选</strong>
+                  </div>
+                  <p>{(day.weather_backup || []).slice(0, 2).join(" / ") || "优先切换室内馆区或商圈。"}</p>
+                </article>
+                <article>
+                  <div>
+                    <ShieldAlert size={14} />
+                    <strong>风险</strong>
+                  </div>
+                  <p>{(day.risk_notes || []).slice(0, 2).join(" / ") || "提前预约并错峰出行。"}</p>
+                </article>
+              </div>
+
+              <div className="travel-map-health">
+                <CheckCircle2 size={14} />
+                <span>{day.map_completeness || `地图节点 ${day.map_node_count || day.route_points.length} 个`}</span>
+              </div>
+
+              {day.transport_plan?.segments?.length ? (
+                <div className="travel-segment-strip" aria-label={`Day ${day.day} 地图交通段`}>
+                  {day.transport_plan.segments.slice(0, 8).map((segment, index) => {
+                    const origin = segment.origin || day.route_points[index] || "";
+                    const destination = segment.destination || day.route_points[index + 1] || "";
+                    return (
+                      <button
+                        type="button"
+                        key={`${day.day}-${origin}-${destination}-${index}`}
+                        onClick={() => onOpenMap?.({ day: day.day, pointName: destination || origin })}
+                        disabled={!onOpenMap || (!origin && !destination)}
+                      >
+                        <Route size={13} />
+                        <span>{origin && destination ? `${origin} -> ${destination}` : origin || destination}</span>
+                        {segment.mode ? <em>{segment.mode}</em> : null}
+                      </button>
+                    );
+                  })}
                 </div>
               ) : null}
 

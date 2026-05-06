@@ -20,6 +20,7 @@ import type {
   AmapClientConfig,
   ChatResponse,
   StructuredTravelPlan,
+  TravelPlanDayView,
   TravelPlanView,
 } from "../lib/types";
 
@@ -132,6 +133,10 @@ export function AiMapWorkbench({ latest, messages, onPrompt, onFocusChange, focu
   const selectedRouteLeg = useMemo(
     () => displayRoutes.find((leg) => leg.index === selectedRouteIndex) || displayRoutes[0] || null,
     [displayRoutes, selectedRouteIndex],
+  );
+  const linkedPlanDay = useMemo(
+    () => resolveLinkedPlanDay(travelPlanView, selectedDay, localFocusName, selectedRouteLeg),
+    [localFocusName, selectedDay, selectedRouteLeg, travelPlanView],
   );
 
   const focusedDisplayPoint = useMemo(
@@ -483,6 +488,16 @@ export function AiMapWorkbench({ latest, messages, onPrompt, onFocusChange, focu
     }
   }
 
+  function focusPlanPoint(name: string, day?: number) {
+    const normalized = name.trim();
+    if (!normalized) return;
+    setPointMode("main");
+    setLocalFocusName(normalized);
+    if (typeof day === "number") {
+      setSelectedDay(day);
+    }
+  }
+
   function buildShareLink() {
     const url = new URL(window.location.href);
     url.searchParams.set("view", "map");
@@ -658,6 +673,72 @@ export function AiMapWorkbench({ latest, messages, onPrompt, onFocusChange, focu
             <MapStat label="通勤" value={formatMeters(mapData?.total_distance_meters || 0)} />
             <MapStat label="耗时" value={formatMinutes(mapData?.total_duration_minutes || 0)} />
           </div>
+
+          {linkedPlanDay ? (
+            <section className="ai-map-linked-plan" aria-label="攻略详情联动">
+              <div className="ai-map-section-head">
+                <MapPinned size={15} />
+                <strong>攻略详情联动</strong>
+              </div>
+              <div className="ai-map-linked-plan-head">
+                <span>Day {linkedPlanDay.day}</span>
+                <strong>{linkedPlanDay.title}</strong>
+                <p>{linkedPlanDay.strategy || linkedPlanDay.summary || linkedPlanDay.route_digest}</p>
+              </div>
+              {linkedPlanDay.route_points?.length ? (
+                <div className="ai-map-linked-points">
+                  {linkedPlanDay.route_points.map((point, index) => (
+                    <button
+                      type="button"
+                      className={pointMatchesFocus({ name: point, query: point } as AiMapPoint, normalizedFocusName) ? "is-focused" : ""}
+                      key={`${linkedPlanDay.day}-${point}-${index}`}
+                      onClick={() => focusPlanPoint(point, linkedPlanDay.day)}
+                    >
+                      <b>{index + 1}</b>
+                      <span>{point}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <div className="ai-map-linked-intel">
+                <article>
+                  <span>美食</span>
+                  <p>{compactPlanText([linkedPlanDay.food_plan?.lunch, linkedPlanDay.food_plan?.dinner, ...(linkedPlanDay.food_plan?.recommendations || []).slice(0, 2)]) || "结合路线就近安排。"}</p>
+                </article>
+                <article>
+                  <span>交通</span>
+                  <p>{linkedPlanDay.transport_plan?.city_transport || linkedPlanDay.transit_hint || linkedPlanDay.transport_plan?.segments?.[0]?.hint || "以当前地图路线为准。"}</p>
+                </article>
+                <article>
+                  <span>预算/强度</span>
+                  <p>{compactPlanText([linkedPlanDay.budget_plan?.summary, linkedPlanDay.pace_level]) || "等待继续细化。"}</p>
+                </article>
+                <article>
+                  <span>风险</span>
+                  <p>{compactPlanText([...(linkedPlanDay.weather_backup || []).slice(0, 1), ...(linkedPlanDay.risk_notes || []).slice(0, 1)]) || "提前预约并错峰。"}</p>
+                </article>
+              </div>
+              {linkedPlanDay.transport_plan?.segments?.length ? (
+                <div className="ai-map-linked-segments">
+                  {linkedPlanDay.transport_plan.segments.slice(0, 6).map((segment, index) => {
+                    const origin = segment.origin || linkedPlanDay.route_points[index] || "";
+                    const destination = segment.destination || linkedPlanDay.route_points[index + 1] || "";
+                    return (
+                      <button
+                        type="button"
+                        key={`${origin}-${destination}-${index}`}
+                        onClick={() => focusPlanPoint(destination || origin, linkedPlanDay.day)}
+                      >
+                        <Route size={13} />
+                        <span>{origin && destination ? `${origin} -> ${destination}` : origin || destination}</span>
+                        {segment.mode ? <em>{segment.mode}</em> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
 
           {focusSummaryPoint ? (
             <section className="ai-map-focus-card" aria-label="当前聚焦地点">
@@ -960,7 +1041,26 @@ function buildStructuredPlanPayload(plan: StructuredTravelPlan | null) {
         stay_minutes: typeof place.stay_minutes === "number" ? place.stay_minutes : null,
         transport_hint: String(place.transport_hint || "").slice(0, 120) || null,
         order: place.order || index + 1,
+        map_required: place.map_required ?? true,
+        source_agenda_title: String(place.source_agenda_title || "").slice(0, 120) || null,
       })),
+      route_nodes: (day.route_nodes || []).map((place, index) => ({
+        name: String(place.name || "").slice(0, 80),
+        aliases: (place.aliases || []).map((alias) => String(alias || "").slice(0, 80)).filter(Boolean).slice(0, 4),
+        intro: String(place.intro || "").slice(0, 240),
+        category: String(place.category || "").slice(0, 40) || null,
+        stay_minutes: typeof place.stay_minutes === "number" ? place.stay_minutes : null,
+        transport_hint: String(place.transport_hint || "").slice(0, 120) || null,
+        order: place.order || index + 1,
+        map_required: place.map_required ?? true,
+        source_agenda_title: String(place.source_agenda_title || "").slice(0, 120) || null,
+      })),
+      food_plan: normalizeFoodPlanPayload(day.food_plan),
+      transport_plan: normalizeTransportPlanPayload(day.transport_plan),
+      budget_plan: normalizeBudgetPlanPayload(day.budget_plan),
+      pace_level: String(day.pace_level || "").slice(0, 60),
+      weather_backup: (day.weather_backup || []).map((item) => String(item || "").slice(0, 160)).filter(Boolean).slice(0, 5),
+      risk_notes: (day.risk_notes || []).map((item) => String(item || "").slice(0, 160)).filter(Boolean).slice(0, 5),
     })),
   };
 }
@@ -994,7 +1094,13 @@ function buildTravelPlanViewPayload(view: TravelPlanView | null) {
       route_digest: String(day.route_digest || "").slice(0, 240),
       route_points: (day.route_points || []).map((point) => String(point || "").slice(0, 80)).filter(Boolean).slice(0, 12),
       transit_hint: String(day.transit_hint || "").slice(0, 160),
-      agenda: [],
+      agenda: (day.agenda || []).map((item) => ({
+        time: String(item.time || "").slice(0, 40),
+        title: String(item.title || "").slice(0, 120),
+        detail: String(item.detail || "").slice(0, 600),
+        place_name: String(item.place_name || "").slice(0, 80) || null,
+        transport_hint: String(item.transport_hint || "").slice(0, 120) || null,
+      })),
       pois: (day.pois || []).map((poi) => ({
         name: String(poi.name || "").slice(0, 80),
         intro: String(poi.intro || "").slice(0, 240),
@@ -1004,10 +1110,54 @@ function buildTravelPlanViewPayload(view: TravelPlanView | null) {
         tags: (poi.tags || []).map((tag) => String(tag || "").slice(0, 30)).filter(Boolean).slice(0, 6),
         order: poi.order || null,
       })),
+      food_plan: normalizeFoodPlanPayload(day.food_plan),
+      transport_plan: normalizeTransportPlanPayload(day.transport_plan),
+      budget_plan: normalizeBudgetPlanPayload(day.budget_plan),
+      pace_level: String(day.pace_level || "").slice(0, 60),
+      weather_backup: (day.weather_backup || []).map((item) => String(item || "").slice(0, 160)).filter(Boolean).slice(0, 5),
+      risk_notes: (day.risk_notes || []).map((item) => String(item || "").slice(0, 160)).filter(Boolean).slice(0, 5),
+      map_node_count: day.map_node_count || 0,
+      map_required_count: day.map_required_count || 0,
+      map_completeness: String(day.map_completeness || "").slice(0, 80),
     })),
     action_hints: (view.action_hints || []).map((item) => String(item || "").slice(0, 120)).filter(Boolean).slice(0, 8),
     supplements: [],
     budget: null,
+  };
+}
+
+function normalizeFoodPlanPayload(foodPlan: TravelPlanDayView["food_plan"]) {
+  return {
+    breakfast: String(foodPlan?.breakfast || "").slice(0, 160),
+    lunch: String(foodPlan?.lunch || "").slice(0, 160),
+    dinner: String(foodPlan?.dinner || "").slice(0, 160),
+    snacks: (foodPlan?.snacks || []).map((item) => String(item || "").slice(0, 120)).filter(Boolean).slice(0, 6),
+    recommendations: (foodPlan?.recommendations || []).map((item) => String(item || "").slice(0, 120)).filter(Boolean).slice(0, 6),
+  };
+}
+
+function normalizeTransportPlanPayload(transportPlan: TravelPlanDayView["transport_plan"]) {
+  return {
+    arrival: String(transportPlan?.arrival || "").slice(0, 160),
+    city_transport: String(transportPlan?.city_transport || "").slice(0, 200),
+    segments: (transportPlan?.segments || []).map((segment) => ({
+      origin: String(segment.origin || "").slice(0, 80),
+      destination: String(segment.destination || "").slice(0, 80),
+      mode: String(segment.mode || "").slice(0, 40),
+      hint: String(segment.hint || "").slice(0, 160),
+    })).slice(0, 10),
+  };
+}
+
+function normalizeBudgetPlanPayload(budgetPlan: TravelPlanDayView["budget_plan"]) {
+  return {
+    summary: String(budgetPlan?.summary || "").slice(0, 200),
+    items: (budgetPlan?.items || []).map((item) => ({
+      name: String(item.name || "").slice(0, 40),
+      amount: String(item.amount || "").slice(0, 60),
+      note: String(item.note || "").slice(0, 120),
+      ratio: typeof item.ratio === "number" ? item.ratio : null,
+    })).slice(0, 6),
   };
 }
 
@@ -1087,6 +1237,42 @@ function pointMatchesFocus(point: AiMapPoint, normalizedFocusName: string) {
     .map((item) => normalizePointText(item || ""))
     .filter(Boolean);
   return names.some((name) => name === normalizedFocusName || name.includes(normalizedFocusName) || normalizedFocusName.includes(name));
+}
+
+function resolveLinkedPlanDay(
+  view: TravelPlanView | null,
+  selectedDay: number | "all",
+  focusName: string | null,
+  selectedRouteLeg: AiMapRouteLeg | null,
+) {
+  const days = view?.days || [];
+  if (!days.length) return null;
+  if (selectedDay !== "all") {
+    return days.find((day) => day.day === selectedDay) || null;
+  }
+  const normalizedFocus = normalizePointText(focusName || "");
+  if (normalizedFocus) {
+    const matched = days.find((day) =>
+      [
+        ...(day.route_points || []),
+        ...(day.pois || []).map((poi) => poi.name),
+        ...(day.agenda || []).map((item) => item.place_name || item.title),
+      ].some((name) => {
+        const normalized = normalizePointText(name || "");
+        return normalized && (normalized === normalizedFocus || normalized.includes(normalizedFocus) || normalizedFocus.includes(normalized));
+      }),
+    );
+    if (matched) return matched;
+  }
+  const routeDay = selectedRouteLeg?.origin.day || selectedRouteLeg?.destination.day;
+  if (typeof routeDay === "number") {
+    return days.find((day) => day.day === routeDay) || null;
+  }
+  return days[0] || null;
+}
+
+function compactPlanText(items: Array<string | undefined | null>) {
+  return items.map((item) => String(item || "").trim()).filter(Boolean).join(" / ");
 }
 
 function buildPointDomKey(point: AiMapPoint) {

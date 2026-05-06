@@ -4214,6 +4214,136 @@ button:disabled {
   color: var(--color-ink-muted);
 }
 
+.ai-map-linked-plan {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--color-rail) 22%, rgba(255, 255, 255, 0.68));
+  border-radius: 18px;
+  background:
+    linear-gradient(150deg, color-mix(in srgb, white 88%, var(--color-rail) 9%), rgba(255, 255, 255, 0.94)),
+    var(--color-surface);
+  box-shadow:
+    0 14px 28px rgba(9, 26, 27, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+.ai-map-linked-plan-head {
+  display: grid;
+  gap: 6px;
+}
+
+.ai-map-linked-plan-head span {
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-rail) 13%, white);
+  color: var(--color-rail);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.ai-map-linked-plan-head strong {
+  color: var(--color-ink-deep);
+  font-size: 15px;
+}
+
+.ai-map-linked-plan-head p,
+.ai-map-linked-intel p {
+  margin: 0;
+  color: var(--color-ink-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.ai-map-linked-points,
+.ai-map-linked-segments,
+.ai-map-linked-intel {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-map-linked-points {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.ai-map-linked-points button,
+.ai-map-linked-segments button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  border: 1px solid color-mix(in srgb, var(--color-rail) 14%, rgba(255, 255, 255, 0.72));
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--color-ink-deep);
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.ai-map-linked-points button {
+  padding: 7px 9px;
+}
+
+.ai-map-linked-points button:hover,
+.ai-map-linked-points button.is-focused,
+.ai-map-linked-segments button:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--color-sun) 54%, var(--color-rail) 34%);
+  box-shadow: 0 10px 20px rgba(9, 26, 27, 0.08);
+}
+
+.ai-map-linked-points b {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--color-rail);
+  color: white;
+  font-size: 11px;
+}
+
+.ai-map-linked-points span,
+.ai-map-linked-segments span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-map-linked-intel {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ai-map-linked-intel article {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-surface) 88%, var(--color-rail) 4%);
+}
+
+.ai-map-linked-intel span {
+  color: var(--color-rail);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.ai-map-linked-segments button {
+  justify-content: flex-start;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.ai-map-linked-segments em {
+  margin-left: auto;
+  color: var(--color-rail);
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 850;
+}
+
 .history-search input,
 .history-select select,
 .archive-editor-form input {
@@ -17480,6 +17610,7 @@ button:disabled {
 
 .travel-plan-highlight-row span,
 .travel-route-strip span,
+.travel-route-strip button,
 .travel-poi-topline span {
   display: inline-flex;
   align-items: center;
@@ -17491,6 +17622,20 @@ button:disabled {
   color: var(--color-rail);
   font-size: 12px;
   font-weight: 800;
+}
+
+.travel-route-strip button,
+.travel-segment-strip button {
+  cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--color-rail) 16%, rgba(255, 255, 255, 0.72));
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.travel-route-strip button:hover,
+.travel-segment-strip button:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--color-rail) 42%, var(--color-sun) 18%);
+  box-shadow: 0 10px 20px rgba(9, 26, 27, 0.08);
 }
 
 .travel-plan-grid {
@@ -17554,6 +17699,97 @@ button:disabled {
   color: var(--color-ink-deep);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.travel-day-intel-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.travel-day-intel-grid article,
+.travel-map-health {
+  border: 1px solid color-mix(in srgb, var(--color-rail) 12%, rgba(255, 255, 255, 0.72));
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), color-mix(in srgb, var(--color-surface) 82%, var(--color-rail) 4%)),
+    var(--color-surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.travel-day-intel-grid article {
+  display: grid;
+  gap: 8px;
+  min-height: 112px;
+  padding: 12px;
+}
+
+.travel-day-intel-grid article > div,
+.travel-map-health {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.travel-day-intel-grid strong,
+.travel-map-health span {
+  color: var(--color-ink-deep);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.travel-day-intel-grid svg,
+.travel-map-health svg {
+  color: var(--color-rail);
+  flex: 0 0 auto;
+}
+
+.travel-day-intel-grid p {
+  margin: 0;
+  color: var(--color-ink-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.travel-map-health {
+  justify-content: flex-start;
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.travel-segment-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.travel-segment-strip button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 9px 12px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), color-mix(in srgb, var(--color-surface) 84%, var(--color-rail) 5%));
+  color: var(--color-ink-deep);
+  font-size: 12px;
+  font-weight: 850;
+  text-align: left;
+}
+
+.travel-segment-strip button span {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.travel-segment-strip button em {
+  flex: 0 0 auto;
+  font-style: normal;
+  color: var(--color-rail);
+  font-size: 11px;
 }
 
 .travel-day-layout {
@@ -17798,6 +18034,7 @@ button:disabled {
   }
 
   .travel-plan-hero-stats,
+  .travel-day-intel-grid,
   .travel-plan-grid {
     grid-template-columns: 1fr;
   }

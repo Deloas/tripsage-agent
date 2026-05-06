@@ -269,9 +269,6 @@ def _extract_render_plan_map_candidates(payload: AiMapWorkbenchRequest) -> list[
             )
             order += 1
 
-    if candidates:
-        return _dedupe_ai_map_candidates(candidates)
-
     for day in view.days:
         for point in day.route_points:
             name = str(point or "").strip()
@@ -301,6 +298,22 @@ def _extract_render_plan_map_candidates(payload: AiMapWorkbenchRequest) -> list[
                 }
             )
             order += 1
+        transport_plan = getattr(day, "transport_plan", None)
+        for item in (transport_plan.segments if transport_plan else []):
+            for name in [getattr(item, "origin", ""), getattr(item, "destination", "")]:
+                name = str(name or "").strip()
+                if not name:
+                    continue
+                candidates.append(
+                    {
+                        "name": name,
+                        "day": day.day,
+                        "source": "travel_plan_transport_segment",
+                        "priority": 155,
+                        "order": order,
+                    }
+                )
+                order += 1
     return _dedupe_ai_map_candidates(candidates)
 
 
@@ -313,6 +326,25 @@ def _extract_structured_map_candidates(payload: AiMapWorkbenchRequest) -> list[d
     candidates: list[dict[str, Any]] = []
     order = 0
     for day in plan.days:
+        route_nodes = getattr(day, "route_nodes", None) or []
+        for place in route_nodes:
+            aliases = place.aliases or []
+            variants = [place.name, *aliases[:3]]
+            for variant_index, variant in enumerate(variants):
+                name = str(variant or "").strip()
+                if not name:
+                    continue
+                candidates.append(
+                    {
+                        "name": name,
+                        "day": day.day,
+                        "source": "structured_route_nodes",
+                        "priority": 220 if variant_index == 0 else 175,
+                        "order": order,
+                    }
+                )
+                order += 1
+
         for place in day.places:
             aliases = place.aliases or []
             variants = [place.name, *aliases[:3]]
