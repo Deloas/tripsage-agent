@@ -30,6 +30,7 @@ class TripAgentState(TypedDict, total=False):
     tool_calls_view: list
     itinerary: list
     structured_plan: dict
+    render_plan: dict
     travel_plan_view: dict
     cards: list
     sources: list

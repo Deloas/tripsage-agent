@@ -3500,6 +3500,7 @@ function buildRailwaySeedChatResponse(
     ],
     itinerary: latest?.itinerary || null,
     structured_plan: latest?.structured_plan || null,
+    render_plan: latest?.render_plan || null,
     travel_plan_view: latest?.travel_plan_view || null,
     tool_calls: [
       {

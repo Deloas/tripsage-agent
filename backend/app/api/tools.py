@@ -246,12 +246,34 @@ async def _build_ai_map_candidates(payload: AiMapWorkbenchRequest) -> list[dict[
 
 def _extract_render_plan_map_candidates(payload: AiMapWorkbenchRequest) -> list[dict[str, Any]]:
     """中文注释：优先读取页面渲染层已经整理好的地点顺序，降低地图与攻略正文脱节的概率。"""
+    render_plan = payload.render_plan
     view = payload.travel_plan_view
-    if not view:
+    if not render_plan and not view:
         return []
 
     candidates: list[dict[str, Any]] = []
     order = 0
+
+    if render_plan:
+        for day in render_plan.days:
+            for block in day.blocks:
+                for name in _split_candidate_name(str(block.title or "").strip()):
+                    if not name:
+                        continue
+                    candidates.append(
+                        {
+                            "name": name,
+                            "day": day.day,
+                            "source": "render_plan_block",
+                            "priority": 220,
+                            "order": order,
+                        }
+                    )
+                    order += 1
+        if len(candidates) >= 3:
+            return _dedupe_ai_map_candidates(candidates)
+        if not view:
+            return _dedupe_ai_map_candidates(candidates)
 
     if view.map_schedule and view.map_schedule.markers:
         for marker in view.map_schedule.markers:

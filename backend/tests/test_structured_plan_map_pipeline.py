@@ -171,6 +171,52 @@ def test_render_plan_map_candidates_prefer_map_schedule() -> None:
     assert all(item["source"] == "travel_plan_view" for item in candidates)
 
 
+def test_render_plan_map_candidates_can_come_from_render_blocks() -> None:
+    """中文注释：当 render_plan 已有正文分段时，地图候选应可直接复用这些节点。"""
+    payload = AiMapWorkbenchRequest.model_validate(
+        {
+            "city": "杭州",
+            "answer": "",
+            "itinerary": [],
+            "render_plan": {
+                "overview": {
+                    "title": "杭州两日攻略",
+                    "positioning": "轻松慢游",
+                    "summary": "围绕西湖和老街展开。",
+                    "route_strategy": "先湖景后夜游。",
+                    "best_for": ["夜景", "美食"],
+                },
+                "days": [
+                    {
+                        "day": 1,
+                        "title": "西湖主线",
+                        "positioning": "慢节奏",
+                        "route_reason": "顺路串联经典点位",
+                        "summary": "白天湖景，晚上老街。",
+                        "blocks": [
+                            {"period": "上午", "title": "西湖景区", "description": "慢走看湖景", "why_here": "核心名片", "food_hint": "", "transport_hint": ""},
+                            {"period": "傍晚", "title": "河坊街", "description": "夜游和美食", "why_here": "夜景收口", "food_hint": "", "transport_hint": ""},
+                            {"period": "夜间", "title": "吴山广场", "description": "继续夜景动线", "why_here": "城市氛围", "food_hint": "", "transport_hint": ""},
+                        ],
+                        "food_story": "",
+                        "photo_tip": "",
+                        "reservation_tip": "",
+                        "avoidance_tip": "",
+                        "fallback_plan": "",
+                    }
+                ],
+                "closing_tips": [],
+            },
+            "mode": "driving",
+        }
+    )
+
+    candidates = _extract_render_plan_map_candidates(payload)
+
+    assert [item["name"] for item in candidates[:3]] == ["西湖景区", "河坊街", "吴山广场"]
+    assert all(item["source"] == "render_plan_block" for item in candidates[:3])
+
+
 def test_structured_fallback_prefers_real_place_pool() -> None:
     """兜底结构应优先使用真实地点池，而不是退回到抽象占位词。"""
     state = {

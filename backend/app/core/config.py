@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     request_timeout_seconds: float = 12.0
 
     llm_timeout_seconds: float = 60.0
-    llm_max_tokens: int = 1600
+    llm_max_tokens: int = 2600
 
 
 def public_url(value: str) -> str:

@@ -207,6 +207,51 @@ class TravelPlanView(BaseModel):
     action_hints: list[str] = Field(default_factory=list)
 
 
+class RenderPlanOverview(BaseModel):
+    """涓枃娉ㄩ噴锛氫富鏀荤暐闃呰灞傜殑椤堕儴鎬昏銆?"""
+
+    title: str = Field(default="", max_length=120)
+    positioning: str = Field(default="", max_length=120)
+    summary: str = Field(default="", max_length=400)
+    route_strategy: str = Field(default="", max_length=240)
+    best_for: list[str] = Field(default_factory=list)
+
+
+class RenderPlanBlock(BaseModel):
+    """涓枃娉ㄩ噴锛氬崟鏃ユ敾鐣ヤ腑鐨勬椂娈靛潡銆?"""
+
+    period: str = Field(default="", max_length=40)
+    title: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=320)
+    why_here: str = Field(default="", max_length=200)
+    food_hint: str = Field(default="", max_length=160)
+    transport_hint: str = Field(default="", max_length=160)
+
+
+class RenderPlanDay(BaseModel):
+    """涓枃娉ㄩ噴锛氫富鏀荤暐姝ｆ枃灞傜殑鍗曟棩妯″潡銆?"""
+
+    day: int = Field(ge=1, le=30)
+    title: str = Field(default="", max_length=120)
+    positioning: str = Field(default="", max_length=120)
+    route_reason: str = Field(default="", max_length=240)
+    summary: str = Field(default="", max_length=320)
+    blocks: list[RenderPlanBlock] = Field(default_factory=list)
+    food_story: str = Field(default="", max_length=240)
+    photo_tip: str = Field(default="", max_length=160)
+    reservation_tip: str = Field(default="", max_length=160)
+    avoidance_tip: str = Field(default="", max_length=160)
+    fallback_plan: str = Field(default="", max_length=200)
+
+
+class RenderPlan(BaseModel):
+    """涓枃娉ㄩ噴锛氱敤浜庡墠绔富鏀荤暐姝ｆ枃鍜岀粏鑺傞槄璇荤殑缁撴瀯鍖栨覆鏌撳眰銆?"""
+
+    overview: RenderPlanOverview
+    days: list[RenderPlanDay] = Field(default_factory=list)
+    closing_tips: list[str] = Field(default_factory=list)
+
+
 class DecisionModule(BaseModel):
     """前端决策工作台模块，用于把长文本规划拆成可视化判断。"""
 
@@ -227,6 +272,7 @@ class ChatResponse(BaseModel):
     cards: list[ResultCard] = Field(default_factory=list)
     itinerary: list[ItineraryBlock] | None = None
     structured_plan: StructuredTravelPlan | None = None
+    render_plan: RenderPlan | None = None
     travel_plan_view: TravelPlanView | None = None
     tool_calls: list[ToolCallView] = Field(default_factory=list)
     sources: list[SourceRef] = Field(default_factory=list)

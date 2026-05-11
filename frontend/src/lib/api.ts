@@ -35,6 +35,7 @@ import type {
   PreferenceTimelineResult,
   PreferenceTimelineUndoPayload,
   PreferenceTimelineUndoResult,
+  RenderPlan,
   SharedPlan,
   StreamStage,
   StructuredTravelPlan,
@@ -477,6 +478,7 @@ export async function buildAiMapWorkbench(payload: {
     items: Array<{ time?: string; title: string; detail: string }>;
   }> | null;
   structured_plan?: StructuredTravelPlan | null;
+  render_plan?: RenderPlan | null;
   travel_plan_view?: TravelPlanView | null;
   mode?: string;
 }): Promise<AiMapWorkbenchResult> {

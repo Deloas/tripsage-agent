@@ -19,6 +19,7 @@ import type {
   AiMapWorkbenchResult,
   AmapClientConfig,
   ChatResponse,
+  RenderPlan,
   StructuredTravelPlan,
   TravelPlanDayView,
   TravelPlanView,
@@ -75,6 +76,7 @@ export function AiMapWorkbench({ latest, messages, onPrompt, onFocusChange, focu
   const [shareCopied, setShareCopied] = useState(false);
 
   const structuredPlan = useMemo(() => buildStructuredPlanPayload(latest?.structured_plan || null), [latest?.structured_plan]);
+  const renderPlan = useMemo(() => buildRenderPlanPayload(latest?.render_plan || null), [latest?.render_plan]);
   const travelPlanView = useMemo(() => buildTravelPlanViewPayload(latest?.travel_plan_view || null), [latest?.travel_plan_view]);
   const city = useMemo(() => inferDestinationCity(latest), [latest]);
   const answerText = useMemo(() => buildAnswerText(latest, messages), [latest, messages]);
@@ -296,6 +298,7 @@ export function AiMapWorkbench({ latest, messages, onPrompt, onFocusChange, focu
         answer: answerText,
         itinerary: itineraryPayload,
         structured_plan: structuredPlan,
+        render_plan: renderPlan,
         travel_plan_view: travelPlanView,
         mode: "driving",
       });
@@ -1062,6 +1065,40 @@ function buildStructuredPlanPayload(plan: StructuredTravelPlan | null) {
       weather_backup: (day.weather_backup || []).map((item) => String(item || "").slice(0, 160)).filter(Boolean).slice(0, 5),
       risk_notes: (day.risk_notes || []).map((item) => String(item || "").slice(0, 160)).filter(Boolean).slice(0, 5),
     })),
+  };
+}
+
+function buildRenderPlanPayload(plan: RenderPlan | null) {
+  if (!plan?.days?.length) return null;
+  return {
+    overview: {
+      title: String(plan.overview?.title || "").slice(0, 120),
+      positioning: String(plan.overview?.positioning || "").slice(0, 120),
+      summary: String(plan.overview?.summary || "").slice(0, 400),
+      route_strategy: String(plan.overview?.route_strategy || "").slice(0, 240),
+      best_for: (plan.overview?.best_for || []).map((item) => String(item || "").slice(0, 80)).filter(Boolean).slice(0, 10),
+    },
+    days: (plan.days || []).map((day) => ({
+      day: day.day,
+      title: String(day.title || "").slice(0, 120),
+      positioning: String(day.positioning || "").slice(0, 120),
+      route_reason: String(day.route_reason || "").slice(0, 240),
+      summary: String(day.summary || "").slice(0, 320),
+      blocks: (day.blocks || []).map((block) => ({
+        period: String(block.period || "").slice(0, 40),
+        title: String(block.title || "").slice(0, 120),
+        description: String(block.description || "").slice(0, 320),
+        why_here: String(block.why_here || "").slice(0, 200),
+        food_hint: String(block.food_hint || "").slice(0, 160),
+        transport_hint: String(block.transport_hint || "").slice(0, 160),
+      })),
+      food_story: String(day.food_story || "").slice(0, 240),
+      photo_tip: String(day.photo_tip || "").slice(0, 160),
+      reservation_tip: String(day.reservation_tip || "").slice(0, 160),
+      avoidance_tip: String(day.avoidance_tip || "").slice(0, 160),
+      fallback_plan: String(day.fallback_plan || "").slice(0, 200),
+    })),
+    closing_tips: (plan.closing_tips || []).map((item) => String(item || "").slice(0, 120)).filter(Boolean).slice(0, 8),
   };
 }
 

@@ -286,6 +286,43 @@ export interface TravelPlanView {
   action_hints: string[];
 }
 
+export interface RenderPlanOverview {
+  title: string;
+  positioning: string;
+  summary: string;
+  route_strategy: string;
+  best_for: string[];
+}
+
+export interface RenderPlanBlock {
+  period: string;
+  title: string;
+  description: string;
+  why_here: string;
+  food_hint: string;
+  transport_hint: string;
+}
+
+export interface RenderPlanDay {
+  day: number;
+  title: string;
+  positioning: string;
+  route_reason: string;
+  summary: string;
+  blocks: RenderPlanBlock[];
+  food_story: string;
+  photo_tip: string;
+  reservation_tip: string;
+  avoidance_tip: string;
+  fallback_plan: string;
+}
+
+export interface RenderPlan {
+  overview: RenderPlanOverview;
+  days: RenderPlanDay[];
+  closing_tips: string[];
+}
+
 export interface DecisionModule {
   type: "transport" | "rainy_day" | "intensity" | "budget" | "risk" | string;
   title: string;
@@ -302,6 +339,7 @@ export interface ChatResponse {
   cards: ResultCard[];
   itinerary?: ItineraryBlock[] | null;
   structured_plan?: StructuredTravelPlan | null;
+  render_plan?: RenderPlan | null;
   travel_plan_view?: TravelPlanView | null;
   tool_calls: ToolCall[];
   sources: SourceRef[];

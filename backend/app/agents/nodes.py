@@ -9,6 +9,10 @@ from app.agents.state import TripAgentState
 from app.schemas.chat import (
     DecisionModule,
     ItineraryBlock,
+    RenderPlan,
+    RenderPlanBlock,
+    RenderPlanDay,
+    RenderPlanOverview,
     StructuredAgendaItem,
     StructuredPlaceBrief,
     StructuredPlanDay,
@@ -247,17 +251,113 @@ def _looks_generic_place(value: str) -> bool:
         return True
     if len(text) <= 1:
         return True
-    return any(word in text for word in ["预算", "建议", "分钟", "打车", "地铁", "高铁", "车次", "返程", "抵达"])
+    return any(
+        word in text
+        for word in [
+            "预算",
+            "建议",
+            "分钟",
+            "打车",
+            "地铁",
+            "高铁",
+            "车次",
+            "返程",
+            "抵达",
+            "这里是",
+            "这是一处",
+            "参观完",
+            "逛了",
+            "十点多",
+            "注意",
+            "推荐",
+            "附近的",
+            "如果你",
+            "可以买",
+        ]
+    )
+
+
+def _looks_fragmented_place(value: str) -> bool:
+    """中文注释：过滤掉像句子片段而不是正式地点名的候选，避免兜底路线被长句污染。"""
+    text = _normalize_text(value)
+    if not text:
+        return True
+    if any(mark in text for mark in ["，", "。", "！", "？", "；"]):
+        return True
+    if len(text) > 18:
+        return True
+    reject_keywords = [
+        "这里",
+        "这是",
+        "如果",
+        "注意",
+        "推荐",
+        "方便",
+        "参观完",
+        "逛了",
+        "到的时候",
+        "选择去",
+        "可以买",
+        "最繁华",
+        "免费开放",
+        "看完",
+    ]
+    return any(keyword in text for keyword in reject_keywords)
+
+
+def _clean_route_style_place_name(value: str) -> str:
+    """中文注释：清洗攻略长文里抽出的路线节点，尽量保留可被地图识别的正式名称。"""
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    text = text.replace("【", "").replace("】", "").replace("[", "").replace("]", "")
+    text = text.replace("（", "(").replace("）", ")")
+    text = re.sub(r"^[0-9]+[.)、]\s*", "", text)
+    text = re.sub(r"^(?:第[一二三四五六七八九十0-9]+天)?(?:路线|主线|行程|夜游|午餐|晚餐|早餐)[:：]?\s*", "", text)
+    text = re.sub(r"^(?:去|到|逛|看|住在|入住|前往)\s*", "", text)
+    text = re.sub(r"(?:附近|一带|区域|商圈)$", "", text).strip()
+    text = re.sub(r"\(([^()/]+?)/[^()]+\)", r"(\1)", text)
+    text = re.sub(r"/.*$", "", text).strip()
+    text = re.sub(r"\s+", "", text)
+    if _looks_generic_place(text) or _looks_fragmented_place(text):
+        return ""
+    return text[:40]
+
+
+def _extract_route_style_places(text: str) -> list[str]:
+    """中文注释：优先从“路线/第X天【...】/A-B-C”这类结构里提取正式地点，减少句子片段误命中。"""
+    if not text:
+        return []
+    result: list[str] = []
+    patterns = [
+        re.compile(r"第[一二三四五六七八九十0-9]+天\s*[【\[](.*?)[】\]]"),
+        re.compile(r"(?:路线|主线|行程)[:：]\s*(.+)"),
+    ]
+    raw_segments: list[str] = []
+    for pattern in patterns:
+        raw_segments.extend(match.group(1) for match in pattern.finditer(text))
+
+    for segment in raw_segments:
+        for item in re.split(r"\s*(?:->|=>|>|→|－|—|-|&|＆|/|｜|\||、|，|,|；|;)\s*", segment):
+            cleaned = _clean_route_style_place_name(item)
+            if cleaned and cleaned not in result:
+                result.append(cleaned)
+    return result[:16]
 
 
 def _extract_place_names(text: str) -> list[str]:
     if not text:
         return []
-    names: list[str] = []
+    names: list[str] = _extract_route_style_places(text)
     for pattern in (PLACE_SUFFIX_PATTERN, PLACE_EN_PATTERN):
         for match in pattern.findall(text):
             name = _normalize_text(match)
-            if name and not _looks_generic_place(name) and name not in names:
+            if (
+                name
+                and not _looks_generic_place(name)
+                and not _looks_fragmented_place(name)
+                and name not in names
+            ):
                 names.append(name[:40])
     return names[:12]
 
@@ -343,9 +443,12 @@ def _extract_places_from_guides(guides: list[dict], destination: str | None) -> 
                 _normalize_text(guide.get("content"))[:1600],
             ]
         )
-        for name in _extract_place_names(merged):
+        candidates = _extract_route_style_places(merged)
+        if len(candidates) < 3:
+            candidates.extend(_extract_place_names(merged))
+        for name in candidates:
             key = _normalize_compact(name)
-            if key in seen:
+            if key in seen or _looks_fragmented_place(name):
                 continue
             seen.add(key)
             pool.append(
@@ -441,6 +544,18 @@ async def _build_planning_place_pool(state: TripAgentState) -> list[dict]:
     return _dedupe_place_pool([*amap_pool, *web_pool, *guide_pool])
 
 
+def _compress_guide_for_planner(guide: dict) -> dict:
+    """中文注释：给规划提示词喂更短的攻略摘要，避免长 OCR 原文把模型输出长度和稳定性一起拖垮。"""
+    source = guide.get("source") or {}
+    return {
+        "title": _normalize_text(guide.get("title"))[:80],
+        "city": _normalize_text(guide.get("city"))[:24],
+        "score": guide.get("score"),
+        "source_title": _normalize_text(source.get("title") or source.get("url"))[:80],
+        "content_excerpt": _normalize_text(guide.get("content"))[:420],
+    }
+
+
 def _build_planner_prompt(state: TripAgentState) -> str:
     """中文注释：把多源上下文压缩后喂给大模型，减少无关噪声对结构化输出的污染。"""
     context = state.get("context", {})
@@ -448,7 +563,7 @@ def _build_planner_prompt(state: TripAgentState) -> str:
         message=state["user_message"],
         intent=state.get("intent"),
         slots=state.get("slots"),
-        guides=state.get("retrieved_guides", [])[:4],
+        guides=[_compress_guide_for_planner(item) for item in state.get("retrieved_guides", [])[:4]],
         selected_guides=(context.get("selected_guides") or [])[:2],
         web_items=[item.__dict__ for item in state.get("web_items", [])[:4]],
         weather=state.get("weather_result"),
@@ -467,7 +582,7 @@ def _build_planner_text_prompt(state: TripAgentState) -> str:
         message=state["user_message"],
         intent=state.get("intent"),
         slots=state.get("slots"),
-        guides=state.get("retrieved_guides", [])[:4],
+        guides=[_compress_guide_for_planner(item) for item in state.get("retrieved_guides", [])[:4]],
         selected_guides=(context.get("selected_guides") or [])[:2],
         web_items=[item.__dict__ for item in state.get("web_items", [])[:4]],
         weather=state.get("weather_result"),
@@ -1074,6 +1189,372 @@ def _build_structured_plan_from_sections(answer: str, state: TripAgentState) -> 
     return _normalize_structured_plan(payload, state)
 
 
+def _normalize_rich_answer(answer: str) -> str:
+    """中文注释：把大模型 Markdown 正文做轻量清洗，便于稳定识别标题、时间段和地点清单。"""
+    text = _normalize_text(answer)
+    text = text.replace("\u200b", "")
+    text = text.replace("**", "")
+    text = text.replace("__", "")
+    text = text.replace("—", "-")
+    text = re.sub(r"\n-{3,}\n", "\n", text)
+    return text
+
+
+def _rich_heading_label(line: str) -> str:
+    plain = _normalize_text(line)
+    plain = plain.lstrip("#").strip()
+    plain = re.sub(r"^[>*-]\s*", "", plain)
+    plain = re.sub(r"[:：]\s*$", "", plain)
+    return plain
+
+
+def _split_rich_day_sections(answer: str) -> list[dict]:
+    """中文注释：按 Day 标题切分正文，兼容粗体、中文冒号和多级 Markdown 标题。"""
+    day_header_pattern = re.compile(
+        r"^#{2,6}\s*(?:Day\s*(?P<digit>\d+)(?:[（(][^）)]*[）)])?|第\s*(?P<cn>[\u4e00-\u9fff0-9]+)\s*天)\s*(?:(?:[|｜:：-]\s*|\s+)(?P<title>.+))?$",
+        re.IGNORECASE,
+    )
+    sections: list[dict] = []
+    current: dict | None = None
+    for raw_line in _normalize_rich_answer(answer).splitlines():
+        line = raw_line.rstrip()
+        match = day_header_pattern.match(line.strip())
+        if match:
+            if current and current.get("lines"):
+                sections.append(current)
+            current = {
+                "day": _coerce_day_number(match.group("digit") or match.group("cn")) or len(sections) + 1,
+                "title": _normalize_text(match.group("title") or ""),
+                "lines": [],
+            }
+            continue
+        if current is not None:
+            current["lines"].append(line)
+    if current and current.get("lines"):
+        sections.append(current)
+    return sections
+
+
+def _extract_rich_section_lines(lines: list[str], headings: list[str]) -> list[str]:
+    """中文注释：从 Day 正文中抽取某个子栏目下的正文行，支持项目符号和加粗小标题。"""
+    target_labels = {_rich_heading_label(heading) for heading in headings}
+    known_labels = {
+        "当天地点清单",
+        "地点清单",
+        "当天地点简介",
+        "地点简介",
+        "美食安排",
+        "交通方式",
+        "预算与强度",
+        "预算提示",
+        "雨天备选",
+        "风险提醒",
+        "出行提醒",
+        "规划概览",
+    }
+    result: list[str] = []
+    capture = False
+    for raw_line in lines:
+        plain = _normalize_text(raw_line)
+        if not plain:
+            if capture and result:
+                break
+            continue
+        label = _rich_heading_label(plain)
+        if label in target_labels:
+            capture = True
+            continue
+        if capture and (label in known_labels or plain.lstrip().startswith("##")):
+            break
+        if not capture:
+            continue
+        cleaned = _normalize_text(re.sub(r"^[>*-]\s*", "", plain))
+        if cleaned:
+            result.append(cleaned)
+    return result
+
+
+def _extract_overview_lines(answer: str) -> list[str]:
+    return _extract_rich_section_lines(_normalize_rich_answer(answer).splitlines(), ["规划概览"])
+
+
+def _first_line_by_keywords(lines: list[str], keywords: list[str]) -> str:
+    for line in lines:
+        if all(keyword in line for keyword in keywords):
+            return line[:200]
+    for line in lines:
+        if any(keyword in line for keyword in keywords):
+            return line[:200]
+    return ""
+
+
+def _parse_rich_time_blocks(lines: list[str]) -> list[dict]:
+    """中文注释：识别“上午/下午/晚上”这类时间块，供攻略正文和地图节点对齐。"""
+    time_pattern = re.compile(
+        r"^(?P<time>早上|上午|中午|下午|傍晚至夜晚|傍晚|晚上|夜间|全天|午后|午间)(?:\s*[（(][^）)]*[）)])?\s*[:：|｜-]?\s*(?P<title>.*)$"
+    )
+    known_labels = {
+        "当天地点清单",
+        "地点清单",
+        "当天地点简介",
+        "地点简介",
+        "美食安排",
+        "交通方式",
+        "预算与强度",
+        "预算提示",
+        "雨天备选",
+        "风险提醒",
+        "出行提醒",
+    }
+    blocks: list[dict] = []
+    current: dict | None = None
+    for raw_line in lines:
+        plain = _normalize_text(raw_line)
+        if not plain:
+            continue
+        if _rich_heading_label(plain) in known_labels:
+            if current and (current.get("title") or current.get("details")):
+                blocks.append(current)
+            current = None
+            continue
+        match = time_pattern.match(re.sub(r"^[>*-]\s*", "", plain))
+        if match:
+            if current and (current.get("title") or current.get("details")):
+                blocks.append(current)
+            current = {
+                "time": _normalize_text(match.group("time")),
+                "title": _normalize_text(match.group("title")),
+                "details": [],
+            }
+            continue
+        if current is not None:
+            current["details"].append(re.sub(r"^[>*-]\s*", "", plain))
+    if current and (current.get("title") or current.get("details")):
+        blocks.append(current)
+    return blocks
+
+
+def _build_places_from_rich_route(route_candidates: list[str], intro_pairs: list[tuple[str, str]], body: str) -> list[dict]:
+    seen_places: set[str] = set()
+    places_payload: list[dict] = []
+    for place_index, place_name in enumerate(route_candidates[:8], start=1):
+        normalized_name = _clean_route_style_place_name(place_name) or _normalize_text(place_name)
+        if not normalized_name or _looks_generic_place(normalized_name) or _looks_fragmented_place(normalized_name):
+            continue
+        key = _normalize_compact(normalized_name)
+        if key in seen_places:
+            continue
+        seen_places.add(key)
+        intro = next((item_intro for item_name, item_intro in intro_pairs if _normalize_compact(item_name) == key), "")
+        if not intro:
+            intro = _pick_sentence_for_place(body, normalized_name)
+        places_payload.append(
+            {
+                "name": normalized_name[:80],
+                "aliases": [],
+                "intro": intro[:180],
+                "category": None,
+                "stay_minutes": None,
+                "transport_hint": None,
+                "order": place_index,
+            }
+        )
+    return places_payload
+
+
+def _build_rich_agenda(time_blocks: list[dict], places_payload: list[dict]) -> list[dict]:
+    agenda_payload: list[dict] = []
+    candidate_names = [item["name"] for item in places_payload]
+    consumed_names: set[str] = set()
+    for block in time_blocks:
+        title_text = _normalize_text(block.get("title"))
+        detail = _normalize_text(" ".join(block.get("details") or []))[:600]
+        source_text = " ".join([title_text, detail])
+        matched_place = next((name for name in candidate_names if name and name in source_text), "")
+        if not matched_place and title_text and not _looks_generic_place(title_text) and not _looks_fragmented_place(title_text):
+            matched_place = title_text
+        if not matched_place:
+            remaining = [name for name in candidate_names if name not in consumed_names]
+            matched_place = remaining[0] if remaining else ""
+        if not matched_place:
+            continue
+        consumed_names.add(matched_place)
+        agenda_payload.append(
+            {
+                "time": _normalize_text(block.get("time"))[:40],
+                "title": matched_place[:120],
+                "detail": detail or next((item["intro"] for item in places_payload if item["name"] == matched_place), ""),
+                "place_name": matched_place[:80],
+                "transport_hint": "",
+            }
+        )
+    return agenda_payload
+
+
+def _build_food_plan_from_lines(lines: list[str]) -> dict:
+    if not lines:
+        return {}
+    lunch = _first_line_by_keywords(lines, ["午餐"])
+    dinner = _first_line_by_keywords(lines, ["晚餐"])
+    breakfast = _first_line_by_keywords(lines, ["早餐"])
+    recommendations = [line[:120] for line in lines[:6]]
+    return {
+        "breakfast": breakfast,
+        "lunch": lunch,
+        "dinner": dinner,
+        "recommendations": recommendations,
+    }
+
+
+def _extract_section_hint(answer: str, headings: list[str]) -> str:
+    normalized = _normalize_rich_answer(answer)
+    body_lines = _extract_rich_section_lines(normalized.splitlines(), headings)
+    if body_lines:
+        return body_lines[0][:200]
+    return ""
+
+
+def _build_structured_plan_from_sections(answer: str, state: TripAgentState) -> StructuredTravelPlan | None:
+    """中文注释：把 DeepSeek 详细攻略正文重新抽成稳定结构，保证聊天、地图和工作台共用同一份计划骨架。"""
+    text = _normalize_rich_answer(answer)
+    if not text:
+        return None
+
+    time_slots = _planner_time_slots()
+    days_payload: list[dict] = []
+    for index, section in enumerate(_split_rich_day_sections(text), start=1):
+        day_number = _coerce_day_number(section.get("day")) or index
+        title = _normalize_text(section.get("title") or f"Day {day_number} 行程")
+        lines = [_normalize_text(item) for item in (section.get("lines") or []) if _normalize_text(item)]
+        body = "\n".join(lines)
+        if not body:
+            continue
+
+        summary = ""
+        ignored_labels = {
+            "当天地点清单",
+            "地点清单",
+            "当天地点简介",
+            "地点简介",
+            "美食安排",
+            "交通方式",
+            "预算与强度",
+            "预算提示",
+            "雨天备选",
+            "风险提醒",
+            "出行提醒",
+        }
+        for line in lines:
+            plain = line.replace("**", "")
+            if _rich_heading_label(plain) in ignored_labels:
+                continue
+            if re.match(r"^(?:[0-9]+[.)、]?|(?:%s))" % "|".join(time_slots), plain):
+                continue
+            summary = plain[:240]
+            break
+
+        route_lines = _extract_rich_section_lines(lines, ["当天地点清单", "地点清单"])
+        explicit_route = [
+            cleaned
+            for line in route_lines
+            for cleaned in [_clean_route_style_place_name(line)]
+            if cleaned
+        ]
+        intro_pairs = _extract_named_list_section(body, "当天地点简介") or _extract_named_list_section(body, "地点简介")
+        route_candidates = explicit_route or [name for name, _intro in intro_pairs] or _extract_place_names(body)
+        places_payload = _build_places_from_rich_route(route_candidates, intro_pairs, body)
+
+        time_blocks = _parse_rich_time_blocks(lines)
+        agenda_payload = _build_rich_agenda(time_blocks, places_payload)
+        if not agenda_payload and places_payload:
+            for place_index, place in enumerate(places_payload[:4], start=1):
+                agenda_payload.append(
+                    {
+                        "time": time_slots[min(place_index - 1, len(time_slots) - 1)],
+                        "title": place["name"],
+                        "detail": place["intro"] or "可在这一时段继续细化停留方式。",
+                        "place_name": place["name"],
+                        "transport_hint": None,
+                    }
+                )
+
+        food_lines = _extract_rich_section_lines(lines, ["美食安排"])
+        transport_lines = _extract_rich_section_lines(lines, ["交通方式"])
+        budget_lines = _extract_rich_section_lines(lines, ["预算与强度", "预算提示"])
+        weather_lines = _extract_rich_section_lines(lines, ["雨天备选"])
+        risk_lines = _extract_rich_section_lines(lines, ["风险提醒", "出行提醒"])
+        food_plan = _build_food_plan_from_lines(food_lines)
+        transport_summary = _first_line_by_keywords(transport_lines, ["交通"]) or (transport_lines[0] if transport_lines else "")
+        budget_summary = budget_lines[0][:200] if budget_lines else ""
+        pace_level = _first_line_by_keywords(budget_lines, ["强度"])
+        if not pace_level:
+            pace_level = "轻松" if any(word in body for word in ["轻松", "不想太赶", "休闲", "慢游"]) else ""
+
+        if agenda_payload or places_payload:
+            days_payload.append(
+                {
+                    "day": day_number,
+                    "title": title[:120],
+                    "summary": summary[:240],
+                    "route_digest": " -> ".join([place["name"] for place in places_payload[:6]]),
+                    "agenda": agenda_payload[:10],
+                    "places": places_payload[:10],
+                    "route_nodes": places_payload[:10],
+                    "food_plan": food_plan,
+                    "transport_plan": {"city_transport": transport_summary},
+                    "budget_plan": {"summary": budget_summary},
+                    "pace_level": pace_level,
+                    "weather_backup": weather_lines[:4],
+                    "risk_notes": risk_lines[:4],
+                }
+            )
+
+    overview_lines = _extract_overview_lines(text)
+    budget_hint = _extract_section_hint(text, ["预算提示"]) or _first_line_by_keywords(overview_lines, ["预算"]) or next(
+        (day.get("budget_plan", {}).get("summary", "") for day in days_payload if day.get("budget_plan", {}).get("summary")),
+        "",
+    )
+    transport_hint = _extract_section_hint(text, ["交通建议"]) or _first_line_by_keywords(overview_lines, ["交通"]) or next(
+        (day.get("transport_plan", {}).get("city_transport", "") for day in days_payload if day.get("transport_plan", {}).get("city_transport")),
+        "",
+    )
+    rainy_day_hint = _extract_section_hint(text, ["雨天备选"]) or next(
+        ("；".join(day.get("weather_backup", [])[:2]) for day in days_payload if day.get("weather_backup")),
+        "",
+    )
+    risk_hint = _extract_section_hint(text, ["风险提醒", "出行提醒"]) or next(
+        ("；".join(day.get("risk_notes", [])[:2]) for day in days_payload if day.get("risk_notes")),
+        "",
+    )
+    city = _normalize_text((state.get("slots") or {}).get("destination")) or _infer_destination_from_message(state.get("user_message", ""))
+    if not city:
+        city = _infer_destination_from_message(text[:120])
+
+    if not days_payload:
+        derived_places = _extract_place_names(text)
+        if derived_places:
+            fallback_state = {
+                **state,
+                "planning_place_pool": [{"name": name, "reason": "来自详细攻略正文"} for name in derived_places],
+            }
+            return _build_structured_plan_fallback(fallback_state)
+        return None
+
+    summary_candidates = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+    trip_summary = summary_candidates[0][:400] if summary_candidates else f"先为你整理了一版 {city or '目的地'} 可执行的详细攻略。"
+    payload = {
+        "city": city,
+        "trip_summary": trip_summary,
+        "planning_style": _first_line_by_keywords(overview_lines, ["节奏"]) or _extract_section_hint(text, ["规划概览"]) or "详细可执行方案",
+        "budget_hint": budget_hint,
+        "transport_hint": transport_hint,
+        "rainy_day_hint": rainy_day_hint,
+        "risk_hint": risk_hint,
+        "days": days_payload,
+    }
+    return _normalize_structured_plan(payload, state)
+
+
 def _looks_like_rich_planning_answer(answer: str | None) -> bool:
     text = _normalize_text(answer)
     if len(text) < 420:
@@ -1493,6 +1974,264 @@ def _collect_supplements(plan: StructuredTravelPlan, state: TripAgentState) -> l
     return result
 
 
+def _join_non_empty(parts: list[str], limit: int = 240) -> str:
+    """中文注释：把多个短句稳定拼成面向前端的单句，避免空字段和重复分隔。"""
+    cleaned = [_normalize_text(part) for part in parts]
+    unique_parts = list(dict.fromkeys([part for part in cleaned if part]))
+    return "；".join(unique_parts)[:limit]
+
+
+def _build_render_plan(plan: StructuredTravelPlan | None, state: TripAgentState) -> RenderPlan | None:
+    """中文注释：基于 structured_plan 生成适合前端正文阅读的 render_plan。"""
+    if not plan or not plan.days:
+        return None
+
+    city = plan.city or _normalize_text((state.get("slots") or {}).get("destination")) or "目的地"
+    best_for = _normalize_text_list(
+        [
+            plan.planning_style,
+            plan.transport_hint,
+            plan.budget_hint,
+            plan.rainy_day_hint,
+        ],
+        limit=4,
+        max_length=80,
+    )
+
+    days: list[RenderPlanDay] = []
+    for day in plan.days:
+        blocks: list[RenderPlanBlock] = []
+        agenda_items = day.agenda[:6]
+        for index, item in enumerate(agenda_items, start=1):
+            linked_place = next(
+                (
+                    place
+                    for place in (day.route_nodes or day.places)
+                    if _normalize_compact(place.name) == _normalize_compact(item.place_name or item.title)
+                ),
+                None,
+            )
+            blocks.append(
+                RenderPlanBlock(
+                    period=_normalize_text(item.time) or f"时段 {index}",
+                    title=_normalize_text(item.title) or _normalize_text(item.place_name) or f"Day {day.day} 节点 {index}",
+                    description=_normalize_text(item.detail) or (linked_place.intro if linked_place else "") or "建议围绕这一段主线灵活展开。",
+                    why_here=(linked_place.intro if linked_place else "") or _normalize_text(day.summary) or _normalize_text(day.route_digest),
+                    food_hint=_join_non_empty(
+                        [
+                            day.food_plan.breakfast if index == 1 else "",
+                            day.food_plan.lunch if index <= max(1, len(agenda_items) // 2) else "",
+                            day.food_plan.dinner if index == len(agenda_items) else "",
+                            *(day.food_plan.recommendations[:1] if not day.food_plan.lunch and not day.food_plan.dinner else []),
+                        ],
+                        limit=120,
+                    ),
+                    transport_hint=_normalize_text(item.transport_hint)
+                    or (linked_place.transport_hint if linked_place else "")
+                    or _normalize_text(day.transport_plan.city_transport)
+                    or _normalize_text(day.transport_plan.arrival),
+                )
+            )
+
+        if not blocks:
+            for index, place in enumerate((day.route_nodes or day.places)[:4], start=1):
+                blocks.append(
+                    RenderPlanBlock(
+                        period=f"节点 {index}",
+                        title=place.name,
+                        description=place.intro or "建议围绕这个地点安排停留与拍照时间。",
+                        why_here=_normalize_text(day.summary) or _normalize_text(day.route_digest),
+                        food_hint=_join_non_empty(day.food_plan.recommendations[:1], limit=120),
+                        transport_hint=_normalize_text(place.transport_hint) or _normalize_text(day.transport_plan.city_transport),
+                    )
+                )
+
+        photo_tip = ""
+        for place in (day.route_nodes or day.places):
+            if place.name:
+                photo_tip = f"{place.name} 更适合留出一点停留时间拍照和观察城市氛围。"
+                break
+
+        reservation_tip = ""
+        if day.risk_notes:
+            reservation_tip = day.risk_notes[0]
+        elif plan.risk_hint:
+            reservation_tip = plan.risk_hint
+
+        days.append(
+            RenderPlanDay(
+                day=day.day,
+                title=day.title or f"{city} 第 {day.day} 天",
+                positioning=_normalize_text(day.pace_level) or _normalize_text(plan.planning_style) or "轻松游逛",
+                route_reason=_normalize_text(day.route_digest) or _normalize_text(day.summary) or "按更顺路的城市动线展开。",
+                summary=_join_non_empty(
+                    [
+                        day.summary,
+                        day.route_digest,
+                        day.transport_plan.city_transport,
+                    ],
+                    limit=320,
+                ),
+                blocks=blocks,
+                food_story=_join_non_empty(
+                    [
+                        day.food_plan.breakfast,
+                        day.food_plan.lunch,
+                        day.food_plan.dinner,
+                        *day.food_plan.recommendations[:2],
+                    ],
+                    limit=240,
+                ),
+                photo_tip=photo_tip,
+                reservation_tip=_normalize_text(reservation_tip),
+                avoidance_tip=_normalize_text(day.risk_notes[1] if len(day.risk_notes) > 1 else "") or _normalize_text(plan.risk_hint),
+                fallback_plan=_join_non_empty(day.weather_backup[:2], limit=200) or _normalize_text(plan.rainy_day_hint),
+            )
+        )
+
+    closing_tips = _normalize_text_list(
+        [
+            plan.transport_hint,
+            plan.budget_hint,
+            plan.rainy_day_hint,
+            plan.risk_hint,
+            *((state.get("guide_coverage") or {}).get("reasons") or []),
+        ],
+        limit=6,
+        max_length=120,
+    )
+
+    overview = RenderPlanOverview(
+        title=f"{city}{len(plan.days)}日行程攻略",
+        positioning=_normalize_text(plan.planning_style) or "可执行旅行方案",
+        summary=_normalize_text(plan.trip_summary) or f"这是一版围绕 {city} 展开的可执行攻略，兼顾路线、节奏和落地体验。",
+        route_strategy=_join_non_empty(
+            [
+                plan.transport_hint,
+                plan.rainy_day_hint,
+                plan.risk_hint,
+            ],
+            limit=240,
+        ),
+        best_for=best_for,
+    )
+    return RenderPlan(overview=overview, days=days, closing_tips=closing_tips)
+
+
+def _build_render_plan(plan: StructuredTravelPlan | None, state: TripAgentState) -> RenderPlan | None:
+    """中文注释：重写 render_plan 生成器，统一对长文本字段做截断，避免富文本计划进入前端时触发校验失败。"""
+    if not plan or not plan.days:
+        return None
+
+    city = plan.city or _normalize_text((state.get("slots") or {}).get("destination")) or "目的地"
+    best_for = _normalize_text_list(
+        [plan.planning_style, plan.transport_hint, plan.budget_hint, plan.rainy_day_hint],
+        limit=4,
+        max_length=80,
+    )
+    time_slots = _planner_time_slots()
+    days: list[RenderPlanDay] = []
+
+    for day in plan.days:
+        agenda_items = day.agenda[:6]
+        blocks: list[RenderPlanBlock] = []
+        for index, item in enumerate(agenda_items, start=1):
+            linked_place = next(
+                (
+                    place
+                    for place in (day.route_nodes or day.places)
+                    if _normalize_compact(place.name) == _normalize_compact(item.place_name or item.title)
+                ),
+                None,
+            )
+            description = _normalize_text(item.detail) or (linked_place.intro if linked_place else "") or "建议围绕这一段主线灵活展开。"
+            why_here = (linked_place.intro if linked_place else "") or _normalize_text(day.summary) or _normalize_text(day.route_digest)
+            food_hint = _join_non_empty(
+                [
+                    day.food_plan.breakfast if index == 1 else "",
+                    day.food_plan.lunch if index <= max(1, len(agenda_items) // 2) else "",
+                    day.food_plan.dinner if index == len(agenda_items) else "",
+                    *(day.food_plan.recommendations[:1] if not day.food_plan.lunch and not day.food_plan.dinner else []),
+                ],
+                limit=160,
+            )
+            transport_hint = (
+                _normalize_text(item.transport_hint)
+                or (linked_place.transport_hint if linked_place else "")
+                or _normalize_text(day.transport_plan.city_transport)
+                or _normalize_text(day.transport_plan.arrival)
+            )
+            blocks.append(
+                RenderPlanBlock(
+                    period=(_normalize_text(item.time) or f"时段 {index}")[:40],
+                    title=(_normalize_text(item.title) or _normalize_text(item.place_name) or f"Day {day.day} 节点 {index}")[:120],
+                    description=description[:320],
+                    why_here=why_here[:200],
+                    food_hint=food_hint[:160],
+                    transport_hint=transport_hint[:160],
+                )
+            )
+
+        if not blocks:
+            for index, place in enumerate((day.route_nodes or day.places)[:4], start=1):
+                blocks.append(
+                    RenderPlanBlock(
+                        period=f"节点 {index}",
+                        title=place.name[:120],
+                        description=(place.intro or "建议围绕这个地点安排停留与拍照时间。")[:320],
+                        why_here=(_normalize_text(day.summary) or _normalize_text(day.route_digest))[:200],
+                        food_hint=_join_non_empty(day.food_plan.recommendations[:1], limit=160)[:160],
+                        transport_hint=(_normalize_text(place.transport_hint) or _normalize_text(day.transport_plan.city_transport))[:160],
+                    )
+                )
+
+        photo_tip = ""
+        for place in (day.route_nodes or day.places):
+            if place.name:
+                photo_tip = f"{place.name} 更适合留出一点停留时间拍照和观察城市氛围。"
+                break
+
+        reservation_tip = _normalize_text(day.risk_notes[0] if day.risk_notes else "") or _normalize_text(plan.risk_hint)
+        days.append(
+            RenderPlanDay(
+                day=day.day,
+                title=(day.title or f"{city} 第 {day.day} 天")[:120],
+                positioning=(_normalize_text(day.pace_level) or _normalize_text(plan.planning_style) or "轻松游逛")[:120],
+                route_reason=(_normalize_text(day.route_digest) or _normalize_text(day.summary) or "按更顺路的城市动线展开。")[:240],
+                summary=_join_non_empty([day.summary, day.route_digest, day.transport_plan.city_transport], limit=320)[:320],
+                blocks=blocks,
+                food_story=_join_non_empty(
+                    [day.food_plan.breakfast, day.food_plan.lunch, day.food_plan.dinner, *day.food_plan.recommendations[:2]],
+                    limit=240,
+                )[:240],
+                photo_tip=photo_tip[:160],
+                reservation_tip=reservation_tip[:160],
+                avoidance_tip=(_normalize_text(day.risk_notes[1] if len(day.risk_notes) > 1 else "") or _normalize_text(plan.risk_hint))[:160],
+                fallback_plan=(_join_non_empty(day.weather_backup[:2], limit=200) or _normalize_text(plan.rainy_day_hint))[:200],
+            )
+        )
+
+    overview = RenderPlanOverview(
+        title=f"{city}{len(plan.days)}日行程攻略"[:120],
+        positioning=(_normalize_text(plan.planning_style) or "可执行旅行方案")[:120],
+        summary=(_normalize_text(plan.trip_summary) or f"这是围绕 {city} 展开的可执行攻略。")[:400],
+        route_strategy=_join_non_empty([plan.transport_hint, plan.rainy_day_hint, plan.risk_hint], limit=240)[:240],
+        best_for=best_for,
+    )
+    closing_tips = _normalize_text_list(
+        [
+            plan.transport_hint,
+            plan.budget_hint,
+            plan.rainy_day_hint,
+            plan.risk_hint,
+            *((state.get("guide_coverage") or {}).get("reasons") or []),
+        ],
+        limit=6,
+        max_length=120,
+    )
+    return RenderPlan(overview=overview, days=days, closing_tips=closing_tips)
+
+
 def _build_travel_plan_view(plan: StructuredTravelPlan | None, state: TripAgentState) -> TravelPlanView | None:
     """中文注释：从结构化方案生成页面渲染层，让前端直接渲染成攻略工作台。"""
     if not plan or not plan.days:
@@ -1648,6 +2387,25 @@ async def _extract_structured_plan_from_answer(answer: str, state: TripAgentStat
     payload = await llm.json_chat(prompt)
     normalized = _normalize_structured_plan(payload or {}, state)
     return normalized or section_plan
+
+
+def _structured_plan_quality_score(plan: StructuredTravelPlan | None) -> int:
+    """中文注释：为多份候选计划打一个粗粒度质量分，优先选择地点更真实、天数更完整、信息更饱满的一份。"""
+    if not plan or not plan.days:
+        return -1
+    score = len(plan.days) * 20
+    for day in plan.days:
+        real_places = [place for place in day.places if place.name and not _looks_fragmented_place(place.name)]
+        score += len(real_places) * 4
+        if day.food_plan.lunch or day.food_plan.dinner:
+            score += 3
+        if day.transport_plan.city_transport or day.transport_plan.arrival:
+            score += 2
+        if day.weather_backup:
+            score += 1
+        if day.risk_notes:
+            score += 1
+    return score
 
 
 def _normalize_city_value(value: object) -> str | None:
@@ -1911,17 +2669,23 @@ async def planner_node(state: TripAgentState) -> TripAgentState:
     state["planning_place_pool"] = await _build_planning_place_pool(state)
 
     structured_plan: StructuredTravelPlan | None = None
+    structured_plan_from_json: StructuredTravelPlan | None = None
+    structured_plan_from_answer: StructuredTravelPlan | None = None
     rich_answer: str | None = None
 
     planner_payload = await llm.json_chat(_build_planner_prompt(state)) if llm.configured() else None
     if planner_payload:
-        structured_plan = _normalize_structured_plan(planner_payload, state)
+        structured_plan_from_json = _normalize_structured_plan(planner_payload, state)
 
     if llm.configured():
         rich_answer = await llm.plain_chat(_build_planner_text_prompt(state))
 
-    if not structured_plan and rich_answer:
-        structured_plan = await _extract_structured_plan_from_answer(rich_answer, state)
+    if rich_answer:
+        structured_plan_from_answer = await _extract_structured_plan_from_answer(rich_answer, state)
+
+    structured_plan = structured_plan_from_json
+    if _structured_plan_quality_score(structured_plan_from_answer) > _structured_plan_quality_score(structured_plan_from_json):
+        structured_plan = structured_plan_from_answer
 
     if not structured_plan:
         structured_plan = _build_structured_plan_fallback(state)
@@ -1953,6 +2717,7 @@ async def response_node(state: TripAgentState) -> TripAgentState:
         structured_plan = StructuredTravelPlan.model_validate(state["structured_plan"]) if state.get("structured_plan") else None
     except ValidationError:
         structured_plan = None
+    state["render_plan"] = _build_render_plan(structured_plan, state)
     state["travel_plan_view"] = _build_travel_plan_view(structured_plan, state)
     state["tool_calls_view"] = recent_tool_calls(state)
     return state

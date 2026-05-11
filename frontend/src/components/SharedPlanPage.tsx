@@ -66,7 +66,7 @@ export function SharedPlanPage({ shareId }: { shareId: string }) {
         </div>
       </section>
 
-      {response.travel_plan_view ? <TravelPlanWorkbench view={response.travel_plan_view} /> : null}
+      {response.travel_plan_view ? <TravelPlanWorkbench view={response.travel_plan_view} renderPlan={response.render_plan} /> : null}
 
       {itinerary.length ? (
         <section className="share-section">
