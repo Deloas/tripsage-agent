@@ -3,6 +3,7 @@ from app.agents.nodes import (
     _build_structured_plan_from_sections,
     _build_travel_plan_view,
     _normalize_structured_plan,
+    _polish_structured_plan,
     _should_keep_rich_answer,
 )
 
@@ -358,3 +359,64 @@ def test_rich_markdown_sections_can_be_parsed_into_two_day_plan() -> None:
     assert plan.days[1].transport_plan.city_transport
     assert plan.days[1].weather_backup
     assert plan.days[1].risk_notes
+
+
+def test_polish_structured_plan_enriches_food_transport_and_canonical_places() -> None:
+    """中文注释：最终抛光应补齐餐饮交通叙述，并清理地点名里的策略噪音。"""
+    payload = {
+        "city": "杭州",
+        "trip_summary": "两天轻松旅行。",
+        "planning_style": "高铁慢游",
+        "days": [
+            {
+                "day": 1,
+                "title": "夜景与老街",
+                "summary": "先逛老街再看夜景。",
+                "route_digest": "河坊街 -> 雷峰塔(不登塔)",
+                "agenda": [
+                    {"time": "下午", "title": "河坊街", "detail": "慢慢逛街。"},
+                    {"time": "晚上", "title": "雷峰塔(不登塔)", "detail": "外观夜景。"},
+                ],
+                "places": [
+                    {"name": "河坊街", "intro": "老街烟火气。", "order": 1},
+                    {"name": "雷峰塔(不登塔)", "intro": "夜景外观更合适。", "order": 2},
+                    {"name": "湖滨银泰in77", "intro": "夜晚商圈。", "order": 3},
+                ],
+                "route_nodes": [
+                    {"name": "河坊街", "intro": "老街烟火气。", "order": 1},
+                    {"name": "雷峰塔(不登塔)", "intro": "夜景外观更合适。", "order": 2},
+                ],
+                "food_plan": {
+                    "lunch": "按住宿位置就近安排，减少折返。",
+                    "dinner": "结合当天路线就近安排本地餐饮。",
+                    "recommendations": [],
+                },
+                "transport_plan": {
+                    "city_transport": "以地图工作台实时路线为准，优先减少折返。",
+                    "segments": [],
+                },
+            }
+        ],
+    }
+    rich_answer = """
+### Day 1 | 夜景与老街
+先在老街慢慢逛，再去湖边收尾夜景。
+**美食安排**
+- 午餐：河坊街小吃，推荐定胜糕和葱包烩。
+- 晚餐：知味观(湖滨总店)，适合收尾。
+**交通方式**
+- 从上海乘高铁到杭州东站，抵达后先地铁再步行进入老城。
+- 河坊街 -> 雷峰塔 -> 湖滨银泰in77，优先地铁加短途步行。
+"""
+
+    plan = _normalize_structured_plan(payload, {"slots": {"destination": "杭州"}})
+    assert plan is not None
+
+    polished = _polish_structured_plan(plan, rich_answer)
+
+    assert polished is not None
+    assert polished.days[0].places[1].name == "雷峰塔"
+    assert polished.days[0].food_plan.lunch.startswith("河坊街小吃")
+    assert "知味观" in polished.days[0].food_plan.dinner
+    assert "杭州东站" in polished.days[0].transport_plan.arrival
+    assert polished.days[0].transport_plan.segments

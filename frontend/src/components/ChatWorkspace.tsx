@@ -33,7 +33,6 @@ import {
 } from "lucide-react";
 import { FormEvent, Fragment, KeyboardEvent, ReactNode, forwardRef, useEffect, useMemo, useRef, useState } from "react";
 
-import { TravelPlanWorkbench } from "./TravelPlanWorkbench";
 import type {
   ChatResponse,
   DecisionModule,
@@ -543,9 +542,10 @@ export function ChatWorkspace({
                 <div className="planner-message-scroll" ref={messageScrollRef}>
                   <div className="planner-message-list">
                     {latest?.travel_plan_view ? (
-                      <TravelPlanWorkbench
+                      <PlannerConversationPlanSummary
                         view={latest.travel_plan_view}
                         renderPlan={latest.render_plan}
+                        destinationCity={destinationCity}
                         onOpenMap={onOpenMapFromPlan}
                         onOpenRailway={onOpenRailwayFromPlan}
                       />
@@ -578,6 +578,7 @@ export function ChatWorkspace({
                               onOpenMap={onOpenMapFromPlan}
                               onOpenRailway={onOpenRailwayFromPlan}
                               onOptimizePlace={handleOptimizePlace}
+                              density="compact"
                             />
                           ) : <p>{message.content}</p>}
                         </article>
@@ -792,6 +793,7 @@ export function ChatWorkspace({
                 onOpenMap={onOpenMapFromPlan}
                 onOpenRailway={onOpenRailwayFromPlan}
                 onOptimizePlace={handleOptimizePlace}
+                density="full"
               />
             </div>
           </section>
@@ -815,6 +817,98 @@ function PlannerStatusChip({
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+function PlannerConversationPlanSummary({
+  view,
+  renderPlan,
+  destinationCity,
+  onOpenMap,
+  onOpenRailway,
+}: {
+  view: TravelPlanView;
+  renderPlan?: RenderPlan | null;
+  destinationCity?: string | null;
+  onOpenMap?: (payload: { day?: number; pointName?: string | null }) => void;
+  onOpenRailway?: (payload: { destination?: string | null; date?: string | null; hint?: string | null }) => void;
+}) {
+  const routePoints = buildConversationRoutePoints(view);
+  const summary = renderPlan?.overview.summary || view.overview.summary;
+  const title = renderPlan?.overview.title || view.overview.title || "当前旅行方案";
+  const pointCount = view.map_schedule?.markers.length || routePoints.length;
+  const budgetHint = view.budget?.total_hint || "待补充";
+
+  return (
+    <section className="planner-inline-plan-summary" aria-label="当前旅行方案摘要">
+      <div className="planner-inline-plan-head">
+        <div className="planner-inline-plan-copy">
+          <div className="section-kicker">
+            <Layers3 size={14} />
+            方案摘要
+          </div>
+          <strong>{title}</strong>
+          <p>{summary}</p>
+        </div>
+        <div className="planner-inline-plan-actions">
+          <button
+            type="button"
+            className="planner-inline-plan-button strong"
+            onClick={() => onOpenMap?.({ day: undefined, pointName: null })}
+            disabled={!onOpenMap}
+          >
+            <MapPinned size={14} />
+            总地图
+          </button>
+          <button
+            type="button"
+            className="planner-inline-plan-button"
+            onClick={() =>
+              onOpenRailway?.({
+                destination: destinationCity || view.map_schedule?.city || title,
+                date: null,
+                hint: summary,
+              })
+            }
+            disabled={!onOpenRailway}
+          >
+            <TrainFront size={14} />
+            铁路联动
+          </button>
+        </div>
+      </div>
+
+      <div className="planner-inline-plan-stats">
+        <span>
+          <Clock3 size={13} />
+          {view.days.length} 天
+        </span>
+        <span>
+          <MapPinned size={13} />
+          {pointCount} 个地点
+        </span>
+        <span>
+          <BadgeDollarSign size={13} />
+          {budgetHint}
+        </span>
+      </div>
+
+      {routePoints.length ? (
+        <div className="planner-inline-plan-route">
+          {routePoints.slice(0, 10).map((point) => (
+            <button
+              type="button"
+              key={`conversation-route-${point}`}
+              className="planner-inline-route-chip"
+              onClick={() => onOpenMap?.({ day: undefined, pointName: point })}
+              disabled={!onOpenMap}
+            >
+              {point}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -1289,7 +1383,19 @@ function PlanVersionRail({
           const sourceCount = version.response.sources?.length || 0;
 
           return (
-            <button type="button" className={`version-track-card ${isActive ? "active" : ""}`} onClick={() => onSelect(version.id)} key={version.id}>
+            <article
+              className={`version-track-card ${isActive ? "active" : ""}`}
+              key={version.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => onSelect(version.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelect(version.id);
+                }
+              }}
+            >
               <div className="version-track-index">{String(index + 1).padStart(2, "0")}</div>
               <div className="version-track-main">
                 <strong>{version.name}</strong>
@@ -1338,7 +1444,7 @@ function PlanVersionRail({
                   </button>
                 </div>
               ) : null}
-            </button>
+            </article>
           );
         })}
       </div>
@@ -1737,6 +1843,21 @@ function joinAnswerMeta(items: Array<string | undefined | null>) {
   return items.map((item) => String(item || "").trim()).filter(Boolean).join(" / ");
 }
 
+function buildConversationRoutePoints(view: TravelPlanView) {
+  const seen = new Set<string>();
+  const points: string[] = [];
+  for (const day of view.days) {
+    for (const rawPoint of day.route_points || []) {
+      const point = String(rawPoint || "").trim();
+      if (!point || seen.has(point)) continue;
+      seen.add(point);
+      points.push(point);
+      if (points.length >= 10) return points;
+    }
+  }
+  return points;
+}
+
 function StructuredAnswerRenderer({
   content,
   destinationCity,
@@ -1746,6 +1867,7 @@ function StructuredAnswerRenderer({
   onOpenMap,
   onOpenRailway,
   onOptimizePlace,
+  density = "compact",
 }: {
   content: string;
   destinationCity?: string | null;
@@ -1755,12 +1877,14 @@ function StructuredAnswerRenderer({
   onOpenMap?: (payload: { day?: number; pointName?: string | null }) => void;
   onOpenRailway?: (payload: { destination?: string | null; date?: string | null; hint?: string | null }) => void;
   onOptimizePlace?: (payload: { placeName: string; detail: string; dayNumber?: number | null; itinerary?: ItineraryBlock[] | null; prompt: string }) => void;
+  density?: "compact" | "full";
 }) {
   const model = useMemo(() => buildAnswerRenderModel(content), [content]);
-  const leadParagraphs = [...model.hero.paragraphs].slice(0, 2);
+  const isCompact = density === "compact";
+  const leadParagraphs = [...model.hero.paragraphs].slice(0, isCompact ? 1 : 2);
 
   return (
-    <div className="answer-renderer answer-story answer-product-shell">
+    <div className={`answer-renderer answer-story answer-product-shell ${isCompact ? "compact" : "full"}`}>
       <section className="answer-hero answer-product-hero">
         <div className="answer-hero-kicker">AI 旅行正文</div>
         <h3>{renderPlan.overview.title || "本轮旅行方案"}</h3>
@@ -1787,6 +1911,179 @@ function StructuredAnswerRenderer({
       {renderPlan.days.map((day) => {
         const linkedDay = findStructuredAnswerDay(travelPlanView, day.day);
         const routePoints = linkedDay?.route_points?.length ? linkedDay.route_points : day.blocks.map((block) => block.title).filter(Boolean);
+        const displayBlocks = isCompact ? day.blocks.slice(0, 4) : day.blocks;
+        const displayPois = linkedDay?.pois?.length ? (isCompact ? linkedDay.pois.slice(0, 4) : linkedDay.pois) : [];
+        const routeSummary = routePoints.slice(0, isCompact ? 6 : routePoints.length);
+        if (isCompact) {
+          return (
+            <section className="answer-day-card answer-product-day compact" key={`structured-day-${day.day}`}>
+              <header className="answer-section-head day">
+                <span className="answer-day-badge">{`DAY ${day.day}`}</span>
+                <div>
+                  <h4>{day.title}</h4>
+                  <p>{day.summary || day.route_reason || day.positioning}</p>
+                </div>
+              </header>
+
+              {routeSummary.length ? (
+                <div className="answer-product-chip-row route compact">
+                  {routeSummary.map((point) => (
+                    <button
+                      type="button"
+                      key={`structured-route-${day.day}-${point}`}
+                      className="answer-mini-action"
+                      onClick={() => onOpenMap?.({ day: day.day, pointName: point })}
+                      disabled={!onOpenMap}
+                    >
+                      <MapPinned size={14} />
+                      {point}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="answer-product-day-grid compact">
+                <div className="answer-product-main-rail">
+                  <div className="answer-product-block-list compact">
+                    {displayBlocks.map((block, index) => {
+                      const actionPrompt = buildPlaceActionPrompt(block.title, block.description, day.day);
+                      return (
+                        <article className="answer-product-block-card compact" key={`structured-block-${day.day}-${block.title}-${index}`}>
+                          <div className="answer-product-block-topline">
+                            <span>{block.period || `时段 ${index + 1}`}</span>
+                            <strong>{block.title}</strong>
+                          </div>
+                          <p>{block.description}</p>
+                          <div className="answer-product-meta-row">
+                            {block.transport_hint ? <span>{block.transport_hint}</span> : null}
+                            {block.food_hint ? <span>{block.food_hint}</span> : null}
+                          </div>
+                          <div className="answer-inline-actions">
+                            <button
+                              type="button"
+                              className="answer-mini-action"
+                              onClick={() => onOpenMap?.({ day: day.day, pointName: block.title })}
+                              disabled={!onOpenMap}
+                            >
+                              <MapPinned size={14} />
+                              地图
+                            </button>
+                            <button
+                              type="button"
+                              className="answer-mini-action"
+                              onClick={() => onOpenRailway?.({
+                                destination: destinationCity || block.title,
+                                date: null,
+                                hint: `${block.title} · ${block.description}`,
+                              })}
+                              disabled={!onOpenRailway}
+                            >
+                              <TrainFront size={14} />
+                              铁路
+                            </button>
+                            <button
+                              type="button"
+                              className="answer-mini-action strong"
+                              onClick={() => onOptimizePlace?.({
+                                placeName: block.title,
+                                detail: block.description,
+                                dayNumber: day.day,
+                                itinerary,
+                                prompt: actionPrompt,
+                              })}
+                              disabled={!onOptimizePlace}
+                            >
+                              <Plus size={14} />
+                              优化
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <aside className="answer-product-side-rail compact">
+                  <div className="answer-product-signal-grid compact">
+                    <article className="answer-product-signal-card">
+                      <div>
+                        <Utensils size={14} />
+                        <strong>美食</strong>
+                      </div>
+                      <p>{day.food_story || joinAnswerMeta([linkedDay?.food_plan?.lunch, linkedDay?.food_plan?.dinner]) || "结合当天路线就近安排本地餐饮。"}</p>
+                    </article>
+                    <article className="answer-product-signal-card">
+                      <div>
+                        <TrainFront size={14} />
+                        <strong>交通</strong>
+                      </div>
+                      <p>{joinAnswerMeta([linkedDay?.transit_hint, linkedDay?.transport_plan?.city_transport, day.route_reason]) || "优先保持顺路动线，减少折返。"}</p>
+                    </article>
+                    <article className="answer-product-signal-card">
+                      <div>
+                        <BadgeDollarSign size={14} />
+                        <strong>预算</strong>
+                      </div>
+                      <p>{linkedDay?.budget_plan?.summary || "可结合住宿、门票和餐饮继续细化预算结构。"}</p>
+                    </article>
+                    <article className="answer-product-signal-card">
+                      <div>
+                        <CloudRain size={14} />
+                        <strong>备选</strong>
+                      </div>
+                      <p>{day.fallback_plan || joinAnswerMeta(linkedDay?.weather_backup || []) || joinAnswerMeta(linkedDay?.risk_notes || []) || "出行前再确认天气与预约。"}</p>
+                    </article>
+                  </div>
+
+                  {displayPois.length ? (
+                    <div className="answer-place-grid compact">
+                      {displayPois.map((poi, poiIndex) => {
+                        const actionPrompt = buildPlaceActionPrompt(poi.name, poi.intro, day.day);
+                        return (
+                          <article className="answer-place-card compact" key={`structured-poi-compact-${day.day}-${poi.name}-${poiIndex}`}>
+                            <div className="answer-place-index">{poiIndex + 1}</div>
+                            <div className="answer-place-copy">
+                              <strong>{poi.name}</strong>
+                              <span>{poi.category || "当天地点"}</span>
+                              {poi.intro ? <p>{poi.intro}</p> : null}
+                              <div className="answer-place-actions">
+                                <button
+                                  type="button"
+                                  className="answer-mini-action"
+                                  onClick={() => onOpenMap?.({ day: day.day, pointName: poi.name })}
+                                  disabled={!onOpenMap}
+                                >
+                                  <MapPinned size={14} />
+                                  地图
+                                </button>
+                                <button
+                                  type="button"
+                                  className="answer-mini-action strong"
+                                  onClick={() => onOptimizePlace?.({
+                                    placeName: poi.name,
+                                    detail: poi.intro,
+                                    dayNumber: day.day,
+                                    itinerary,
+                                    prompt: actionPrompt,
+                                  })}
+                                  disabled={!onOptimizePlace}
+                                >
+                                  <Plus size={14} />
+                                  优化
+                                </button>
+                              </div>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </aside>
+              </div>
+            </section>
+          );
+        }
+
         return (
           <section className="answer-day-card answer-product-day" key={`structured-day-${day.day}`}>
             <header className="answer-section-head day">
@@ -2009,6 +2306,7 @@ function AnswerRenderer({
   onOpenMap,
   onOpenRailway,
   onOptimizePlace,
+  density = "compact",
 }: {
   content: string;
   destinationCity?: string | null;
@@ -2018,6 +2316,7 @@ function AnswerRenderer({
   onOpenMap?: (payload: { day?: number; pointName?: string | null }) => void;
   onOpenRailway?: (payload: { destination?: string | null; date?: string | null; hint?: string | null }) => void;
   onOptimizePlace?: (payload: { placeName: string; detail: string; dayNumber?: number | null; itinerary?: ItineraryBlock[] | null; prompt: string }) => void;
+  density?: "compact" | "full";
 }) {
   const model = useMemo(() => buildAnswerRenderModel(content), [content]);
 
@@ -2032,6 +2331,7 @@ function AnswerRenderer({
         onOpenMap={onOpenMap}
         onOpenRailway={onOpenRailway}
         onOptimizePlace={onOptimizePlace}
+        density={density}
       />
     );
   }

@@ -318,7 +318,7 @@ def _clean_route_style_place_name(value: str) -> str:
     text = re.sub(r"(?:附近|一带|区域|商圈)$", "", text).strip()
     text = re.sub(r"\(([^()/]+?)/[^()]+\)", r"(\1)", text)
     text = re.sub(r"/.*$", "", text).strip()
-    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
     if _looks_generic_place(text) or _looks_fragmented_place(text):
         return ""
     return text[:40]
@@ -640,6 +640,7 @@ def _normalize_structured_plan(payload: dict, state: TripAgentState) -> Structur
                 for item in (raw_place.get("aliases") or [])
                 if str(item).strip() and str(item).strip() != name and not _looks_generic_place(str(item).strip())
             ]
+            name, aliases = _normalize_place_payload_fields(name, aliases)
             places.append(
                 {
                     "name": name[:80],
@@ -662,12 +663,14 @@ def _normalize_structured_plan(payload: dict, state: TripAgentState) -> Structur
             detail = str(raw_item.get("detail") or "").strip()
             if not title and not detail:
                 continue
+            place_name = _canonicalize_place_name(str(raw_item.get("place_name") or "").strip()) or _canonicalize_place_name(title) or str(raw_item.get("place_name") or "").strip() or title
+            title = _canonicalize_place_name(title) or title
             agenda.append(
                 {
                     "time": str(raw_item.get("time") or "").strip()[:40],
                     "title": title[:120],
                     "detail": detail[:600],
-                    "place_name": str(raw_item.get("place_name") or "").strip()[:80] or None,
+                    "place_name": place_name[:80] or None,
                     "transport_hint": str(raw_item.get("transport_hint") or "").strip()[:120] or None,
                 }
             )
@@ -732,14 +735,15 @@ def _derive_places_from_agenda(agenda: list[dict]) -> list[dict]:
     seen: set[str] = set()
     places: list[dict] = []
     for index, item in enumerate(agenda, start=1):
-        name = str(item.get("place_name") or item.get("title") or "").strip()
+        raw_name = str(item.get("place_name") or item.get("title") or "").strip()
+        name, aliases = _normalize_place_payload_fields(raw_name)
         if not name or name in seen or _looks_generic_place(name):
             continue
         seen.add(name)
         places.append(
             {
                 "name": name[:80],
-                "aliases": [],
+                "aliases": aliases[:4],
                 "intro": str(item.get("detail") or "").strip()[:180],
                 "category": None,
                 "stay_minutes": None,
@@ -783,14 +787,15 @@ def _merge_place_lists(primary: list[dict], secondary: list[dict]) -> list[dict]
 
 
 def _coerce_place_payload(raw_place: dict, place_index: int, source_title: str | None = None) -> dict | None:
-    name = _normalize_text(raw_place.get("name") or raw_place.get("title") or raw_place.get("place_name"))
-    if not name or _looks_generic_place(name):
-        return None
-    aliases = [
+    raw_name = _normalize_text(raw_place.get("name") or raw_place.get("title") or raw_place.get("place_name"))
+    raw_aliases = [
         _normalize_text(item)
         for item in (raw_place.get("aliases") or [])
-        if _normalize_text(item) and _normalize_text(item) != name and not _looks_generic_place(_normalize_text(item))
+        if _normalize_text(item) and _normalize_text(item) != raw_name and not _looks_generic_place(_normalize_text(item))
     ]
+    name, aliases = _normalize_place_payload_fields(raw_name, raw_aliases)
+    if not name or _looks_generic_place(name):
+        return None
     return {
         "name": name[:80],
         "aliases": aliases[:4],
@@ -822,13 +827,14 @@ def _normalize_route_nodes(raw_day: dict, agenda: list[dict], places: list[dict]
             nodes.append(node)
 
     for item in agenda:
-        name = _normalize_text(item.get("place_name") or item.get("title"))
+        raw_name = _normalize_text(item.get("place_name") or item.get("title"))
+        name, aliases = _normalize_place_payload_fields(raw_name)
         if not name or _looks_generic_place(name):
             continue
         nodes.append(
             {
                 "name": name[:80],
-                "aliases": [],
+                "aliases": aliases[:4],
                 "intro": _normalize_text(item.get("detail"))[:240],
                 "category": None,
                 "stay_minutes": None,
@@ -871,10 +877,12 @@ def _normalize_transport_plan(raw_day: dict, route_nodes: list[dict]) -> dict:
     for index, raw_segment in enumerate(transport.get("segments") or [], start=1):
         if not isinstance(raw_segment, dict):
             continue
+        origin = _canonicalize_place_name(_normalize_text(raw_segment.get("origin"))) or _normalize_text(raw_segment.get("origin"))
+        destination = _canonicalize_place_name(_normalize_text(raw_segment.get("destination"))) or _normalize_text(raw_segment.get("destination"))
         segments.append(
             {
-                "origin": _normalize_text(raw_segment.get("origin"))[:80],
-                "destination": _normalize_text(raw_segment.get("destination"))[:80],
+                "origin": origin[:80],
+                "destination": destination[:80],
                 "mode": _normalize_text(raw_segment.get("mode"))[:40],
                 "hint": _normalize_text(raw_segment.get("hint"))[:160],
             }
@@ -1338,7 +1346,8 @@ def _build_places_from_rich_route(route_candidates: list[str], intro_pairs: list
     seen_places: set[str] = set()
     places_payload: list[dict] = []
     for place_index, place_name in enumerate(route_candidates[:8], start=1):
-        normalized_name = _clean_route_style_place_name(place_name) or _normalize_text(place_name)
+        raw_name = _clean_route_style_place_name(place_name) or _normalize_text(place_name)
+        normalized_name, aliases = _normalize_place_payload_fields(raw_name)
         if not normalized_name or _looks_generic_place(normalized_name) or _looks_fragmented_place(normalized_name):
             continue
         key = _normalize_compact(normalized_name)
@@ -1351,7 +1360,7 @@ def _build_places_from_rich_route(route_candidates: list[str], intro_pairs: list
         places_payload.append(
             {
                 "name": normalized_name[:80],
-                "aliases": [],
+                "aliases": aliases[:4],
                 "intro": intro[:180],
                 "category": None,
                 "stay_minutes": None,
@@ -1367,7 +1376,7 @@ def _build_rich_agenda(time_blocks: list[dict], places_payload: list[dict]) -> l
     candidate_names = [item["name"] for item in places_payload]
     consumed_names: set[str] = set()
     for block in time_blocks:
-        title_text = _normalize_text(block.get("title"))
+        title_text = _canonicalize_place_name(_normalize_text(block.get("title"))) or _normalize_text(block.get("title"))
         detail = _normalize_text(" ".join(block.get("details") or []))[:600]
         source_text = " ".join([title_text, detail])
         matched_place = next((name for name in candidate_names if name and name in source_text), "")
@@ -1384,11 +1393,144 @@ def _build_rich_agenda(time_blocks: list[dict], places_payload: list[dict]) -> l
                 "time": _normalize_text(block.get("time"))[:40],
                 "title": matched_place[:120],
                 "detail": detail or next((item["intro"] for item in places_payload if item["name"] == matched_place), ""),
-                "place_name": matched_place[:80],
+                "place_name": (_canonicalize_place_name(matched_place) or matched_place)[:80],
                 "transport_hint": "",
             }
         )
     return agenda_payload
+
+
+PLACE_NOISE_NOTE_PATTERN = re.compile(
+    r"(?:\u4e0d\u767b\u5854|\u4e0d\u4e0a\u5854|\u5916\u89c2|\u6253\u5361|\u62cd\u7167\u70b9|\u62cd\u7167\u4f4d|\u89c2\u666f\u4f4d|\u591c\u666f\u6bb5|\u591c\u6e38\u6bb5|\u53ef\u9009|\u5907\u9009|\u6709\u9910\u996e(?:\u7684\u5e97)?|\u987a\u8def|\u9644\u8fd1|\u5468\u8fb9|\u4e00\u5e26|\u7247\u533a|\u533a\u57df|\u5546\u5708|\u5165\u53e3|\u51fa\u53e3|\u96c6\u5408\u70b9|\u7ec8\u70b9|\u8d77\u70b9)",
+    re.IGNORECASE,
+)
+PLACE_BRANCH_NOTE_PATTERN = re.compile(
+    r"(?:\u603b\u5e97|\u65d7\u8230\u5e97|\u95e8\u5e97|\u5e97|\u9986|\u7ad9|\u7801\u5934|\u56ed\u533a|\u666f\u533a|\u5e7f\u573a|\u56ed|Loft|LOFT|Park|Mall|K11|in\d+|IN\d+)",
+    re.IGNORECASE,
+)
+PLACE_VERB_PREFIX_PATTERN = re.compile(
+    r"^(?:\u524d\u5f80|\u53bb|\u5230|\u62b5\u8fbe|\u5165\u4f4f|\u56de\u5230|\u8fd4\u56de|\u6253\u5361|\u6e38\u89c8|\u901b|\u6f2b\u6b65|\u7ecf\u8fc7|\u987a\u8def\u53bb|\u5148\u53bb|\u518d\u53bb)\s*"
+)
+
+
+def _strip_list_prefix(text: str) -> str:
+    """中文注释：清理列表前缀，避免项目符号影响后续抽取。"""
+    return re.sub(r"^(?:[>*-]|\d+[.)、])\s*", "", _normalize_text(text))
+
+
+def _clean_food_sentence(text: str) -> str:
+    """中文注释：把美食条目中的标签前缀去掉，保留适合渲染的正文。"""
+    sentence = _strip_list_prefix(text)
+    sentence = re.sub(
+        r"^(?:\u65e9\u9910|\u65e9\u996d|\u5348\u9910|\u5348\u996d|\u4e2d\u9910|\u665a\u9910|\u665a\u996d|\u591c\u5bb5|\u5c0f\u5403|\u52a0\u9910|\u7f8e\u98df\u63a8\u8350|\u9910\u996e\u5efa\u8bae|\u63a8\u8350)\s*[:：-]\s*",
+        "",
+        sentence,
+    )
+    return sentence[:160]
+
+
+def _is_generic_food_sentence(text: str) -> bool:
+    plain = _normalize_text(text)
+    if not plain:
+        return True
+    generic_tokens = [
+        "\u6309\u4f4f\u5bbf\u4f4d\u7f6e\u5c31\u8fd1\u5b89\u6392",
+        "\u4f18\u5148\u9009\u62e9\u5f53\u65e5\u4e3b\u7ebf\u9644\u8fd1",
+        "\u7ed3\u5408\u5f53\u5929\u8def\u7ebf\u5c31\u8fd1\u5b89\u6392",
+        "\u907f\u514d\u665a\u95f4\u8de8\u57ce\u6298\u8fd4",
+        "\u672c\u5730\u9910\u996e",
+        "\u7ee7\u7eed\u7ec6\u5316",
+    ]
+    return any(token in plain for token in generic_tokens)
+
+
+def _is_generic_transport_sentence(text: str) -> bool:
+    plain = _normalize_text(text)
+    if not plain:
+        return True
+    generic_tokens = [
+        "\u4ee5\u5730\u56fe\u5de5\u4f5c\u53f0\u5b9e\u65f6\u8def\u7ebf\u4e3a\u51c6",
+        "\u4f18\u5148\u51cf\u5c11\u6298\u8fd4",
+        "\u4f18\u5148\u4fdd\u6301\u987a\u8def\u52a8\u7ebf",
+        "\u5730\u94c1/\u6b65\u884c/\u77ed\u9014\u6253\u8f66",
+        "\u4fdd\u6301\u987a\u8def",
+    ]
+    return any(token in plain for token in generic_tokens)
+
+
+def _canonicalize_place_name(value: str) -> str:
+    """中文注释：去掉地点名里的策略噪音，保留更适合地图识别的主名称。"""
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    text = _strip_list_prefix(text)
+    text = PLACE_VERB_PREFIX_PATTERN.sub("", text)
+    # 中文注释：英文景点名需要保留单词间空格，中文景点名则继续压缩无意义空白。
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
+    text = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[()（）])", "", text)
+    text = re.sub(r"(?<=[()（）])\s+(?=[\u4e00-\u9fff])", "", text)
+    text = re.sub(r"[|｜].*$", "", text).strip()
+    text = re.sub(r"/.*$", "", text).strip()
+    parenthetical_notes = re.findall(r"[（(]([^()（）]{1,24})[)）]", text)
+    text = re.sub(
+        r"[（(]([^()（）]{1,24})[)）]",
+        lambda match: "" if PLACE_NOISE_NOTE_PATTERN.search(match.group(1)) else match.group(0),
+        text,
+    )
+    text = re.sub(r"(?:\u9644\u8fd1|\u5468\u8fb9|\u4e00\u5e26|\u7247\u533a|\u533a\u57df)$", "", text).strip()
+    text = re.sub(r"(?:\u5165\u53e3|\u51fa\u53e3|\u96c6\u5408\u70b9|\u7ec8\u70b9|\u8d77\u70b9)$", "", text).strip()
+    text = re.sub(r"\(([^()/]+?)/[^()]+\)", r"(\1)", text)
+    text = text.strip("，。；;、:- ")
+    if PLACE_NOISE_NOTE_PATTERN.search(text):
+        text = re.sub(r"[（(][^()（）]{1,24}[)）]", "", text).strip()
+        text = re.sub(PLACE_NOISE_NOTE_PATTERN, "", text).strip("，。；;、:- ")
+    if len(text) <= 2 and parenthetical_notes:
+        for note in parenthetical_notes:
+            if PLACE_BRANCH_NOTE_PATTERN.search(note) and len(note) >= 2:
+                text = note.strip()
+                break
+    if _looks_generic_place(text) or _looks_fragmented_place(text):
+        return ""
+    return text[:80]
+
+
+def _build_place_aliases(name: str, extra_aliases: list[str] | None = None) -> list[str]:
+    """中文注释：补充中英别名与括号别名，提高地图与检索命中率。"""
+    raw_name = _normalize_text(name)
+    candidates = list(extra_aliases or [])
+    candidates.extend(re.findall(r"[（(]([^()（）]{1,24})[)）]", raw_name))
+    compact = re.sub(r"[（(][^()（）]{1,24}[)）]", "", raw_name).strip()
+    if compact and compact != raw_name:
+        candidates.append(compact)
+    if re.search(r"[A-Za-z]", raw_name):
+        candidates.extend(re.findall(r"[A-Za-z][A-Za-z0-9-]{1,24}", raw_name))
+    chinese_only = re.sub(r"[A-Za-z0-9\s()（）-]+", "", raw_name).strip()
+    if chinese_only and chinese_only != raw_name:
+        candidates.append(chinese_only)
+    unique: list[str] = []
+    for item in candidates:
+        alias = _normalize_text(item)
+        alias = PLACE_VERB_PREFIX_PATTERN.sub("", alias)
+        alias = alias.strip("，。；;、:- ")
+        if not alias or alias == name or alias == raw_name:
+            continue
+        if PLACE_NOISE_NOTE_PATTERN.search(alias) and not PLACE_BRANCH_NOTE_PATTERN.search(alias):
+            continue
+        if _looks_generic_place(alias) or _looks_fragmented_place(alias):
+            continue
+        if alias not in unique:
+            unique.append(alias[:80])
+    return unique[:6]
+
+
+def _normalize_place_payload_fields(name: str, aliases: list[str] | None = None) -> tuple[str, list[str]]:
+    """中文注释：统一地点主名和别名的归一化规则。"""
+    canonical = _canonicalize_place_name(name) or _normalize_text(name)
+    merged_aliases = _build_place_aliases(name, aliases)
+    if canonical in merged_aliases:
+        merged_aliases = [item for item in merged_aliases if item != canonical]
+    return canonical[:80], merged_aliases[:6]
 
 
 def _build_food_plan_from_lines(lines: list[str]) -> dict:
@@ -1403,6 +1545,116 @@ def _build_food_plan_from_lines(lines: list[str]) -> dict:
         "lunch": lunch,
         "dinner": dinner,
         "recommendations": recommendations,
+    }
+
+
+def _build_food_plan_from_lines(lines: list[str]) -> dict:
+    """中文注释：增强版美食段解析，优先拿到早餐/午餐/晚餐和小吃推荐。"""
+    if not lines:
+        return {}
+    breakfast = ""
+    lunch = ""
+    dinner = ""
+    snacks: list[str] = []
+    recommendations: list[str] = []
+    meal_rules = [
+        (re.compile(r"(?:\u65e9\u9910|\u65e9\u996d)"), "breakfast"),
+        (re.compile(r"(?:\u5348\u9910|\u5348\u996d|\u4e2d\u9910)"), "lunch"),
+        (re.compile(r"(?:\u665a\u9910|\u665a\u996d)"), "dinner"),
+        (re.compile(r"(?:\u591c\u5bb5|\u5c0f\u5403|\u52a0\u9910)"), "snacks"),
+    ]
+
+    for raw_line in lines:
+        line = _strip_list_prefix(raw_line)
+        if not line:
+            continue
+        cleaned = _clean_food_sentence(line)
+        matched_label = None
+        for pattern, label in meal_rules:
+            if pattern.search(line):
+                matched_label = label
+                break
+        if matched_label == "breakfast" and cleaned:
+            breakfast = breakfast or cleaned
+        elif matched_label == "lunch" and cleaned:
+            lunch = lunch or cleaned
+        elif matched_label == "dinner" and cleaned:
+            dinner = dinner or cleaned
+        elif matched_label == "snacks" and cleaned and cleaned not in snacks:
+            snacks.append(cleaned)
+        if cleaned and cleaned not in recommendations:
+            recommendations.append(cleaned[:120])
+
+    if not lunch:
+        lunch = _clean_food_sentence(_first_line_by_keywords(lines, ["\u5348\u9910"]) or _first_line_by_keywords(lines, ["\u5348\u996d"]) or "")
+    if not dinner:
+        dinner = _clean_food_sentence(_first_line_by_keywords(lines, ["\u665a\u9910"]) or _first_line_by_keywords(lines, ["\u665a\u996d"]) or "")
+    if not breakfast:
+        breakfast = _clean_food_sentence(_first_line_by_keywords(lines, ["\u65e9\u9910"]) or _first_line_by_keywords(lines, ["\u65e9\u996d"]) or "")
+    return {
+        "breakfast": breakfast,
+        "lunch": lunch,
+        "dinner": dinner,
+        "snacks": snacks[:4],
+        "recommendations": recommendations[:6],
+    }
+
+
+def _build_transport_plan_from_lines(lines: list[str], route_nodes: list[dict] | None = None) -> dict:
+    """中文注释：增强版交通段解析，补出往返交通和市内串联建议。"""
+    route_nodes = route_nodes or []
+    arrival = ""
+    city_transport = ""
+    segments: list[dict] = []
+    route_names = [str(item.get("name") or "").strip() for item in route_nodes if str(item.get("name") or "").strip()]
+
+    for raw_line in lines:
+        line = _strip_list_prefix(raw_line)
+        if not line:
+            continue
+        cleaned = re.sub(
+            r"^(?:\u4ea4\u901a\u65b9\u5f0f|\u4ea4\u901a\u5efa\u8bae|\u4ea4\u901a\u7ec4\u7ec7|\u5e02\u5185\u4ea4\u901a|\u5f80\u8fd4\u4ea4\u901a)\s*[:：-]\s*",
+            "",
+            line,
+        )[:200]
+        if not cleaned:
+            continue
+        if not arrival and any(token in cleaned for token in ["\u9ad8\u94c1", "\u706b\u8f66", "\u62b5\u8fbe", "\u5230\u8fbe", "\u8fd4\u7a0b", "\u51fa\u53d1"]):
+            arrival = cleaned
+        if any(token in cleaned for token in ["\u5730\u94c1", "\u6b65\u884c", "\u6253\u8f66", "\u516c\u4ea4", "\u9a91\u884c", "\u8f6e\u6e21", "\u8239", "\u9ad8\u94c1"]):
+            if not city_transport or _is_generic_transport_sentence(city_transport):
+                city_transport = cleaned
+        if any(connector in cleaned for connector in ["->", "\u2192", "\u81f3", "\u5230", "\u524d\u5f80"]):
+            matched_names = [name for name in route_names if name and name in cleaned]
+            if len(matched_names) >= 2:
+                segments.append(
+                    {
+                        "origin": matched_names[0][:80],
+                        "destination": matched_names[1][:80],
+                        "mode": "\u5730\u94c1/\u6b65\u884c",
+                        "hint": cleaned[:160],
+                    }
+                )
+
+    if not segments and len(route_nodes) >= 2:
+        for origin, destination in zip(route_nodes, route_nodes[1:]):
+            origin_name = _normalize_text(origin.get("name"))
+            destination_name = _normalize_text(destination.get("name"))
+            if not origin_name or not destination_name:
+                continue
+            hint = _normalize_text(destination.get("transport_hint") or city_transport)
+            segments.append(
+                {
+                    "origin": origin_name[:80],
+                    "destination": destination_name[:80],
+                    "mode": "\u5730\u94c1/\u6b65\u884c/\u77ed\u9014\u6253\u8f66",
+                    "hint": hint[:160] if hint else "\u4f18\u5148\u6309\u987a\u8def\u52a8\u7ebf\u8854\u63a5\uff0c\u5b9e\u65f6\u8def\u7ebf\u4ee5\u5730\u56fe\u5de5\u4f5c\u53f0\u4e3a\u51c6\u3002",
+                }
+            )
+    return {
+        "arrival": arrival[:160],
+        "city_transport": city_transport[:200],
+        "segments": segments[:10],
     }
 
 
@@ -2663,6 +2915,217 @@ async def route_node(state: TripAgentState) -> TripAgentState:
     return state
 
 
+def _merge_unique_texts(items: list[str], limit: int = 6) -> list[str]:
+    """中文注释：合并文本列表时去重并保持顺序。"""
+    unique: list[str] = []
+    for item in items:
+        text = _normalize_text(item)
+        if text and text not in unique:
+            unique.append(text)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+def _build_day_section_lookup(answer: str | None) -> dict[int, dict]:
+    """中文注释：把 rich answer 按天索引，供后续二次抛光使用。"""
+    if not answer:
+        return {}
+    lookup: dict[int, dict] = {}
+    for section in _split_rich_day_sections(_normalize_rich_answer(answer)):
+        day_number = _coerce_day_number(section.get("day"))
+        if not day_number:
+            continue
+        lines = [_normalize_text(item) for item in (section.get("lines") or []) if _normalize_text(item)]
+        lookup[day_number] = {
+            "lines": lines,
+            "body": "\n".join(lines),
+        }
+    return lookup
+
+
+def _extract_day_section_lines(lines: list[str], headings: list[str]) -> list[str]:
+    """中文注释：按标题抽取单日段落，兼容不同写法。"""
+    extracted = _extract_rich_section_lines(lines, headings)
+    return [_normalize_text(item) for item in extracted if _normalize_text(item)]
+
+
+def _normalize_place_collection(raw_places: list[dict]) -> list[dict]:
+    """中文注释：合并重复地点并同步别名。"""
+    merged: list[dict] = []
+    index_by_key: dict[str, int] = {}
+    for order, raw_place in enumerate(raw_places, start=1):
+        payload = _coerce_place_payload(raw_place, _coerce_int(raw_place.get("order")) or order)
+        if not payload:
+            continue
+        key = _normalize_compact(payload.get("name"))
+        if not key:
+            continue
+        if key in index_by_key:
+            target = merged[index_by_key[key]]
+            target["aliases"] = _merge_unique_texts([*(target.get("aliases") or []), *(payload.get("aliases") or [])], limit=6)
+            if not target.get("intro") and payload.get("intro"):
+                target["intro"] = payload.get("intro")
+            if not target.get("transport_hint") and payload.get("transport_hint"):
+                target["transport_hint"] = payload.get("transport_hint")
+            continue
+        payload["order"] = len(merged) + 1
+        merged.append(payload)
+        index_by_key[key] = len(merged) - 1
+    return merged[:12]
+
+
+def _normalize_agenda_collection(raw_agenda: list[dict]) -> list[dict]:
+    """中文注释：统一 agenda 内的地点标题，减少聊天区与地图区命名漂移。"""
+    normalized: list[dict] = []
+    for item in raw_agenda:
+        title = _canonicalize_place_name(_normalize_text(item.get("title"))) or _normalize_text(item.get("title"))
+        place_name = _canonicalize_place_name(_normalize_text(item.get("place_name") or item.get("title"))) or title
+        detail = _normalize_text(item.get("detail"))[:600]
+        if not title and not detail:
+            continue
+        normalized.append(
+            {
+                "time": _normalize_text(item.get("time"))[:40],
+                "title": title[:120],
+                "detail": detail,
+                "place_name": place_name[:80] or None,
+                "transport_hint": _normalize_text(item.get("transport_hint"))[:120] or None,
+            }
+        )
+    return normalized[:10]
+
+
+def _merge_food_plan_payload(current: dict, extracted: dict) -> dict:
+    """中文注释：用 richer 的餐饮信息替换明显兜底的旧文本。"""
+    current = {**current}
+    for field in ["breakfast", "lunch", "dinner"]:
+        candidate = _normalize_text(extracted.get(field))
+        existing = _normalize_text(current.get(field))
+        if candidate and (not existing or _is_generic_food_sentence(existing)):
+            current[field] = candidate[:160]
+    current["snacks"] = _merge_unique_texts([*(current.get("snacks") or []), *(extracted.get("snacks") or [])], limit=4)
+    current["recommendations"] = _merge_unique_texts(
+        [*(current.get("recommendations") or []), *(extracted.get("recommendations") or [])],
+        limit=6,
+    )
+    return current
+
+
+def _merge_transport_plan_payload(current: dict, extracted: dict, route_nodes: list[dict]) -> dict:
+    """中文注释：回填更具体的交通叙述和相邻段路线。"""
+    current = {**current}
+    current_arrival = _normalize_text(current.get("arrival"))
+    current_city_transport = _normalize_text(current.get("city_transport"))
+    extracted_arrival = _normalize_text(extracted.get("arrival"))
+    extracted_city_transport = _normalize_text(extracted.get("city_transport"))
+    if extracted_arrival and (not current_arrival or _is_generic_transport_sentence(current_arrival)):
+        current["arrival"] = extracted_arrival[:160]
+    if extracted_city_transport and (not current_city_transport or _is_generic_transport_sentence(current_city_transport)):
+        current["city_transport"] = extracted_city_transport[:200]
+
+    merged_segments: list[dict] = []
+    for segment in [*(current.get("segments") or []), *(extracted.get("segments") or [])]:
+        origin = _canonicalize_place_name(_normalize_text(segment.get("origin"))) or _normalize_text(segment.get("origin"))
+        destination = _canonicalize_place_name(_normalize_text(segment.get("destination"))) or _normalize_text(segment.get("destination"))
+        mode = _normalize_text(segment.get("mode"))[:40]
+        hint = _normalize_text(segment.get("hint"))[:160]
+        if not origin and not destination:
+            continue
+        key = f"{_normalize_compact(origin)}->{_normalize_compact(destination)}"
+        if any(key == f"{_normalize_compact(item.get('origin'))}->{_normalize_compact(item.get('destination'))}" for item in merged_segments):
+            continue
+        merged_segments.append(
+            {
+                "origin": origin[:80],
+                "destination": destination[:80],
+                "mode": mode,
+                "hint": hint,
+            }
+        )
+    if not merged_segments and len(route_nodes) >= 2:
+        merged_segments = _build_transport_plan_from_lines([], route_nodes).get("segments", [])
+    current["segments"] = merged_segments[:10]
+    return current
+
+
+def _polish_structured_plan(plan: StructuredTravelPlan | None, rich_answer: str | None) -> StructuredTravelPlan | None:
+    """中文注释：在最终落状态前统一地点命名，并补足美食/交通细节。"""
+    if not plan or not plan.days:
+        return plan
+
+    day_lookup = _build_day_section_lookup(rich_answer)
+    polished_days: list[dict] = []
+
+    for day in plan.days:
+        day_payload = day.model_dump()
+        section = day_lookup.get(day.day, {})
+        section_lines = section.get("lines") or []
+
+        agenda = _normalize_agenda_collection(day_payload.get("agenda") or [])
+        places = _normalize_place_collection(day_payload.get("places") or [])
+        route_nodes = _normalize_place_collection(day_payload.get("route_nodes") or places or [])
+        if not places and agenda:
+            places = _derive_places_from_agenda(agenda)
+        if route_nodes:
+            places = _merge_place_lists(places, route_nodes)[:10]
+        elif places:
+            route_nodes = places[:]
+        if not route_nodes and agenda:
+            route_nodes = _normalize_place_collection(_derive_places_from_agenda(agenda))
+
+        food_lines = _extract_day_section_lines(
+            section_lines,
+            ["\u7f8e\u98df\u5b89\u6392", "\u7f8e\u98df\u63a8\u8350", "\u9910\u996e\u5efa\u8bae", "\u5403\u4ec0\u4e48"],
+        )
+        transport_lines = _extract_day_section_lines(
+            section_lines,
+            ["\u4ea4\u901a\u65b9\u5f0f", "\u4ea4\u901a\u5efa\u8bae", "\u4ea4\u901a\u7ec4\u7ec7", "\u5e02\u5185\u4ea4\u901a", "\u5f80\u8fd4\u4ea4\u901a"],
+        )
+        food_plan = _merge_food_plan_payload(day_payload.get("food_plan") or {}, _build_food_plan_from_lines(food_lines))
+        transport_plan = _merge_transport_plan_payload(
+            day_payload.get("transport_plan") or {},
+            _build_transport_plan_from_lines(transport_lines, route_nodes or places),
+            route_nodes or places,
+        )
+
+        route_digest = " -> ".join([place.get("name", "") for place in (route_nodes or places)[:6] if place.get("name")])
+        if not route_digest:
+            route_digest = " -> ".join(
+                [
+                    _canonicalize_place_name(name) or name
+                    for name in _split_route_points(day.route_digest)
+                    if _canonicalize_place_name(name) or name
+                ][:6]
+            )
+
+        day_payload.update(
+            {
+                "agenda": agenda[:10],
+                "places": places[:10],
+                "route_nodes": route_nodes[:12],
+                "route_digest": route_digest[:240],
+                "food_plan": food_plan,
+                "transport_plan": transport_plan,
+            }
+        )
+        polished_days.append(day_payload)
+
+    payload = plan.model_dump()
+    payload["days"] = polished_days
+    payload["transport_hint"] = (
+        _normalize_text(payload.get("transport_hint"))
+        or next(
+            (_normalize_text(day.get("transport_plan", {}).get("city_transport")) for day in polished_days if _normalize_text(day.get("transport_plan", {}).get("city_transport"))),
+            "",
+        )
+    )[:200]
+    try:
+        return StructuredTravelPlan.model_validate(payload)
+    except ValidationError:
+        return plan
+
+
 async def planner_node(state: TripAgentState) -> TripAgentState:
     """??????????????????????????????????????"""
     llm = LlmService()
@@ -2689,6 +3152,7 @@ async def planner_node(state: TripAgentState) -> TripAgentState:
 
     if not structured_plan:
         structured_plan = _build_structured_plan_fallback(state)
+    structured_plan = _polish_structured_plan(structured_plan, rich_answer)
 
     state["structured_plan"] = structured_plan.model_dump() if structured_plan else None
     state["itinerary"] = _build_itinerary_from_structured_plan(structured_plan)
