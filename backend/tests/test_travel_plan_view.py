@@ -409,10 +409,11 @@ def test_polish_structured_plan_enriches_food_transport_and_canonical_places() -
 - 河坊街 -> 雷峰塔 -> 湖滨银泰in77，优先地铁加短途步行。
 """
 
-    plan = _normalize_structured_plan(payload, {"slots": {"destination": "杭州"}})
+    state = {"slots": {"destination": "杭州", "origin": "上海", "budget": "2000"}}
+    plan = _normalize_structured_plan(payload, state)
     assert plan is not None
 
-    polished = _polish_structured_plan(plan, rich_answer)
+    polished = _polish_structured_plan(plan, rich_answer, state)
 
     assert polished is not None
     assert polished.days[0].places[1].name == "雷峰塔"
@@ -420,3 +421,7 @@ def test_polish_structured_plan_enriches_food_transport_and_canonical_places() -
     assert "知味观" in polished.days[0].food_plan.dinner
     assert "杭州东站" in polished.days[0].transport_plan.arrival
     assert polished.days[0].transport_plan.segments
+    assert len(polished.days[0].route_nodes) >= 3
+    assert polished.days[0].budget_plan.summary
+    assert polished.days[0].weather_backup
+    assert polished.days[0].risk_notes

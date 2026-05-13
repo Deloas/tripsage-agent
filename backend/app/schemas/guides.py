@@ -120,4 +120,9 @@ class GuideImportRecordItem(BaseModel):
     message: str | None = None
     quality: dict | None = None
     diagnostics: dict | None = None
+    content: str | None = None
+    structured: dict | None = None
+    category: str | None = None
+    resolved_url: str | None = None
+    author: str | None = None
     created_at: str | None = None

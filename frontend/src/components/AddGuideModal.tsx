@@ -58,6 +58,7 @@ interface AddGuideModalProps {
   importRecords: GuideImportRecordItem[];
   importTasks?: GuideImportTaskItem[];
   activeImportTask?: GuideImportTaskItem | null;
+  onFetchImportRecord: (recordId: number) => Promise<GuideImportRecordItem | null>;
   onDeleteImportRecord: (recordId: number) => Promise<void>;
   onUseImportedGuide: (guide: GuideDetail) => void;
   onOptimizeImportedGuide: (guide: GuideDetail) => void;
@@ -72,6 +73,7 @@ interface AddGuideModalProps {
 type ImportMode = "link" | "manual";
 type HistoryView = "list" | "detail";
 type ImagePreviewState = { url: string; label: string } | null;
+type DeleteDialogState = GuideImportRecordItem | null;
 
 interface PreviewDraft {
   title: string;
@@ -112,6 +114,7 @@ export function AddGuideModal({
   importRecords,
   importTasks = [],
   activeImportTask = null,
+  onFetchImportRecord,
   onDeleteImportRecord,
   onUseImportedGuide,
   onOptimizeImportedGuide,
@@ -132,6 +135,11 @@ export function AddGuideModal({
   const [previewImage, setPreviewImage] = useState<ImagePreviewState>(null);
   const [historyView, setHistoryView] = useState<HistoryView>("list");
   const [selectedRecordSnapshot, setSelectedRecordSnapshot] = useState<GuideImportRecordItem | null>(null);
+  const [selectedRecordLoading, setSelectedRecordLoading] = useState(false);
+  const [selectedRecordError, setSelectedRecordError] = useState<string | null>(null);
+  const [pendingDeleteRecord, setPendingDeleteRecord] = useState<DeleteDialogState>(null);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [routePreview, setRoutePreview] = useState<GuideRoutePreviewResult | null>(null);
   const [routePreviewLoading, setRoutePreviewLoading] = useState(false);
   const [railwayOrigin, setRailwayOrigin] = useState("");
@@ -142,11 +150,10 @@ export function AddGuideModal({
   const selectedRecord = useMemo(
     () => {
       const current = importRecords.find((item) => String(item.id) === String(selectedRecordId)) || null;
-      if (current) return current;
-      if (selectedRecordSnapshot && String(selectedRecordSnapshot.id) === String(selectedRecordId)) {
-        return selectedRecordSnapshot;
-      }
-      return null;
+      const snapshot = selectedRecordSnapshot && String(selectedRecordSnapshot.id) === String(selectedRecordId)
+        ? selectedRecordSnapshot
+        : null;
+      return mergeGuideImportRecord(current, snapshot);
     },
     [importRecords, selectedRecordId, selectedRecordSnapshot],
   );
@@ -178,6 +185,11 @@ export function AddGuideModal({
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (pendingDeleteRecord) {
+          setPendingDeleteRecord(null);
+          setDeleteError(null);
+          return;
+        }
         if (previewImage) {
           setPreviewImage(null);
           return;
@@ -191,7 +203,22 @@ export function AddGuideModal({
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [onClose, open, previewImage]);
+  }, [onClose, open, pendingDeleteRecord, previewImage]);
+
+  useEffect(() => {
+    if (!open) {
+      setPendingDeleteRecord(null);
+      setDeleteSubmitting(false);
+      setDeleteError(null);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (preselectedRecordId || importResult?.record?.id || previewResult?.record?.id) return;
+    // 中文注释：普通打开时回到记录列表，避免沿用上一次关闭前停留的详情态。
+    setHistoryView("list");
+  }, [importResult?.record?.id, open, preselectedRecordId, previewResult?.record?.id]);
 
   useEffect(() => {
     if (!open) return;
@@ -204,18 +231,58 @@ export function AddGuideModal({
     if (importResult?.record?.id) {
       setSelectedRecordId(importResult.record.id);
       setSelectedRecordSnapshot(importResult.record);
+      setHistoryView("detail");
       return;
     }
     if (previewResult?.record?.id) {
       setSelectedRecordId(previewResult.record.id);
       setSelectedRecordSnapshot(previewResult.record);
+      setHistoryView("detail");
       return;
     }
     if (!selectedRecordId && importRecords.length) {
       setSelectedRecordId(importRecords[0].id);
       setSelectedRecordSnapshot(importRecords[0]);
+      return;
+    }
+    if (!importRecords.length) {
+      setSelectedRecordId(null);
+      setSelectedRecordSnapshot(null);
     }
   }, [importRecords, importResult?.record?.id, open, preselectedRecordId, previewResult?.record?.id, selectedRecordId]);
+
+  useEffect(() => {
+    if (!open || !selectedRecordId) return undefined;
+    const recordId = selectedRecordId;
+    let cancelled = false;
+
+    async function loadSelectedRecord() {
+      setSelectedRecordLoading(true);
+      setSelectedRecordError(null);
+      try {
+        const detail = await onFetchImportRecord(recordId);
+        if (cancelled) return;
+        if (detail) {
+          setSelectedRecordSnapshot((current) => mergeGuideImportRecord(current, detail));
+        } else if (!selectedRecord) {
+          setSelectedRecordError("未能读取这条导入记录的完整详情，请稍后重试。");
+        }
+      } catch {
+        if (!cancelled) {
+          setSelectedRecordError("导入记录详情加载失败，请检查后端服务状态。");
+        }
+      } finally {
+        if (!cancelled) {
+          setSelectedRecordLoading(false);
+        }
+      }
+    }
+
+    void loadSelectedRecord();
+    return () => {
+      cancelled = true;
+    };
+  }, [onFetchImportRecord, open, selectedRecordId]);
 
   useEffect(() => {
     setRoutePreview(null);
@@ -345,7 +412,9 @@ export function AddGuideModal({
   function openRecordDetail(record: GuideImportRecordItem) {
     setSelectedRecordId(record.id);
     setSelectedRecordSnapshot(record);
+    setSelectedRecordLoading(true);
     setHistoryView("detail");
+    setSelectedRecordError(null);
   }
 
   function loadRecordToEditor(record: GuideImportRecordItem) {
@@ -363,12 +432,46 @@ export function AddGuideModal({
     });
   }
 
-  async function handleDeleteRecord(recordId: number) {
-    await onDeleteImportRecord(recordId);
-    if (selectedRecordId === recordId) {
+  function requestDeleteRecord(record: GuideImportRecordItem) {
+    setPendingDeleteRecord(record);
+    setDeleteError(null);
+  }
+
+  async function handleConfirmDeleteRecord() {
+    if (!pendingDeleteRecord || deleteSubmitting) return;
+
+    const recordId = pendingDeleteRecord.id;
+    // 中文注释：先算出删除后的承接记录，成功后就能无缝切到下一条，而不是把用户甩回空白态。
+    const nextRecord = resolveNextGuideImportRecord(importRecords, recordId);
+    const deletingCurrentRecord = selectedRecordId === recordId;
+    const wasDetailView = historyView === "detail";
+
+    setDeleteSubmitting(true);
+    setDeleteError(null);
+    try {
+      await onDeleteImportRecord(recordId);
+      setPendingDeleteRecord(null);
+
+      if (!deletingCurrentRecord) return;
+
+      if (nextRecord) {
+        setSelectedRecordId(nextRecord.id);
+        setSelectedRecordSnapshot(nextRecord);
+        setSelectedRecordError(null);
+        setSelectedRecordLoading(wasDetailView);
+        setHistoryView(wasDetailView ? "detail" : "list");
+        return;
+      }
+
       setSelectedRecordId(null);
       setSelectedRecordSnapshot(null);
+      setSelectedRecordLoading(false);
+      setSelectedRecordError(null);
       setHistoryView("list");
+    } catch {
+      setDeleteError("删除失败，请检查后端服务状态后重试。");
+    } finally {
+      setDeleteSubmitting(false);
     }
   }
 
@@ -412,7 +515,11 @@ export function AddGuideModal({
   return (
     <>
       <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-        <section className="guide-modal guide-modal-upgraded" aria-label="攻略导入工作台">
+        <section
+          className="guide-modal guide-modal-upgraded"
+          aria-label="攻略导入工作台"
+          data-testid="guide-import-modal"
+        >
           <header className="guide-modal-header">
             <div className="guide-modal-topline">
               <div>
@@ -800,13 +907,18 @@ export function AddGuideModal({
                 </div>
 
                 {importRecords.length ? (
-                  <div className="guide-import-history-list">
+                  <div className="guide-import-history-list" data-testid="guide-import-history-list">
                     {importRecords.map((record) => (
                       <article
                         key={record.id}
                         className={`guide-import-history-item ${record.id === selectedRecordId ? "active" : ""}`}
                       >
-                        <button type="button" className="guide-import-history-main" onClick={() => openRecordDetail(record)}>
+                        <button
+                          type="button"
+                          className="guide-import-history-main"
+                          data-testid={`guide-import-record-open-${record.id}`}
+                          onClick={() => openRecordDetail(record)}
+                        >
                           <div>
                             <strong>{record.title || record.url}</strong>
                             <p>{record.url}</p>
@@ -820,7 +932,12 @@ export function AddGuideModal({
                             <Eye size={12} />
                             查看
                           </button>
-                          <button type="button" className="danger" onClick={() => void handleDeleteRecord(record.id)}>
+                          <button
+                            type="button"
+                            className="danger"
+                            data-testid={`guide-import-record-delete-${record.id}`}
+                            onClick={() => requestDeleteRecord(record)}
+                          >
                             <Trash2 size={12} />
                             删除
                           </button>
@@ -837,14 +954,20 @@ export function AddGuideModal({
               ) : null}
 
               {!shouldShowHistoryList ? (
-                <section className="guide-import-history-detail">
+                <section className="guide-import-history-detail" data-testid="guide-import-record-detail">
                   <div className="guide-import-detail-toolbar">
                     <button type="button" className="secondary-action compact" onClick={() => setHistoryView("list")}>
                       <ChevronLeft size={14} />
                       返回记录
                     </button>
+                    {selectedRecordLoading ? <span className="history-status-pill">正在同步详情</span> : null}
                     {selectedRecord ? (
-                      <button type="button" className="secondary-action compact danger" onClick={() => void handleDeleteRecord(selectedRecord.id)}>
+                      <button
+                        type="button"
+                        className="secondary-action compact danger"
+                        data-testid="guide-import-detail-delete-trigger"
+                        onClick={() => requestDeleteRecord(selectedRecord)}
+                      >
                         <Trash2 size={14} />
                         删除记录
                       </button>
@@ -852,10 +975,16 @@ export function AddGuideModal({
                   </div>
                   {selectedRecord ? (
                     <>
+                  {selectedRecordError ? (
+                    <div className="guide-import-history-detail-note">
+                      <span>详情同步</span>
+                      <strong>{selectedRecordError}</strong>
+                    </div>
+                  ) : null}
                   <div className="guide-import-history-detail-head">
                     <div className="guide-record-header-copy">
                       <strong>{selectedRecord.title || selectedRecord.url}</strong>
-                      <p className="guide-side-note">{selectedRecord.url}</p>
+                      <p className="guide-side-note" data-testid="guide-import-detail-url">{selectedRecord.url}</p>
                     </div>
                     <span className={`history-status-pill status-${selectedRecord.status}`}>
                       {buildStatusText(selectedRecord.status)}
@@ -895,7 +1024,12 @@ export function AddGuideModal({
                           <span>可编辑预览正文</span>
                           <strong>{selectedRecord.content.length} 字，已可恢复到左侧编辑区</strong>
                         </div>
-                        <button type="button" className="primary-action compact" onClick={() => loadRecordToEditor(selectedRecord)}>
+                        <button
+                          type="button"
+                          className="primary-action compact"
+                          data-testid="guide-import-load-editor"
+                          onClick={() => loadRecordToEditor(selectedRecord)}
+                        >
                           <CheckCircle2 size={14} />
                           载入编辑区
                         </button>
@@ -1007,6 +1141,70 @@ export function AddGuideModal({
             </div>
             <img src={previewImage.url} alt={previewImage.label} />
           </div>
+        </div>
+      ) : null}
+
+      {pendingDeleteRecord ? (
+        <div
+          className="guide-import-confirm-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="确认删除导入记录"
+          data-testid="guide-import-delete-dialog"
+        >
+          <button
+            type="button"
+            className="guide-import-confirm-dialog-backdrop"
+            aria-label="关闭删除确认"
+            onClick={() => {
+              if (deleteSubmitting) return;
+              setPendingDeleteRecord(null);
+              setDeleteError(null);
+            }}
+          />
+          <section className="guide-import-confirm-dialog-panel">
+            <div className="guide-import-confirm-dialog-head">
+              <span className="section-kicker">
+                <Trash2 size={14} />
+                删除确认
+              </span>
+              <strong>{pendingDeleteRecord.title || pendingDeleteRecord.url}</strong>
+            </div>
+
+            <div className="guide-import-confirm-dialog-body">
+              <p>删除后，这条导入记录会从记录中心移除。</p>
+              <p className="guide-side-note" data-testid="guide-import-delete-dialog-url">{pendingDeleteRecord.url}</p>
+              <div className="guide-import-confirm-dialog-note">
+                仅删除导入记录本身，不会影响已经入库的攻略正文与知识库条目。
+              </div>
+              {deleteError ? <div className="guide-mobility-error">{deleteError}</div> : null}
+            </div>
+
+            <div className="guide-import-confirm-dialog-actions">
+              <button
+                type="button"
+                className="secondary-action compact"
+                data-testid="guide-import-delete-cancel"
+                onClick={() => {
+                  if (deleteSubmitting) return;
+                  setPendingDeleteRecord(null);
+                  setDeleteError(null);
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="secondary-action compact danger"
+                data-testid="guide-import-delete-confirm"
+                disabled={deleteSubmitting}
+                onClick={() => void handleConfirmDeleteRecord()}
+              >
+                <Trash2 size={14} />
+                {deleteSubmitting ? "删除中..." : "确认删除"}
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
     </>
@@ -1374,6 +1572,36 @@ function cloneStructured(value: GuideStructuredDraft | null | undefined): GuideS
     budget_tips: [...(value?.budget_tips || [])],
     risk_notes: [...(value?.risk_notes || [])],
   };
+}
+
+function mergeGuideImportRecord(
+  base: GuideImportRecordItem | null,
+  patch: GuideImportRecordItem | null,
+): GuideImportRecordItem | null {
+  if (!base && !patch) return null;
+  if (!base) return patch ? { ...patch } : null;
+  if (!patch) return base ? { ...base } : null;
+  if (base.id !== patch.id) return patch;
+  return {
+    ...base,
+    ...patch,
+    quality: patch.quality ?? base.quality,
+    diagnostics: patch.diagnostics ?? base.diagnostics,
+    content: patch.content ?? base.content,
+    structured: patch.structured ?? base.structured,
+    category: patch.category ?? base.category,
+    resolved_url: patch.resolved_url ?? base.resolved_url,
+    author: patch.author ?? base.author,
+  };
+}
+
+function resolveNextGuideImportRecord(
+  records: GuideImportRecordItem[],
+  deletedRecordId: number,
+): GuideImportRecordItem | null {
+  const index = records.findIndex((item) => item.id === deletedRecordId);
+  if (index === -1) return records[0] || null;
+  return records[index + 1] || records[index - 1] || null;
 }
 
 function extractGuideMobilityNodeNames(guide: GuideDetail): string[] {

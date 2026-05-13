@@ -3049,13 +3049,239 @@ def _merge_transport_plan_payload(current: dict, extracted: dict, route_nodes: l
     return current
 
 
-def _polish_structured_plan(plan: StructuredTravelPlan | None, rich_answer: str | None) -> StructuredTravelPlan | None:
+def _collect_day_route_names(agenda: list[dict], route_nodes: list[dict], places: list[dict]) -> list[str]:
+    """中文注释：把单日路线里的地点名汇总成稳定顺序，供预算、交通和文案补足复用。"""
+    names: list[str] = []
+    for place in [*route_nodes, *places]:
+        name = _canonicalize_place_name(_normalize_text(place.get("name"))) or _normalize_text(place.get("name"))
+        if name and name not in names:
+            names.append(name)
+    for item in agenda:
+        name = _canonicalize_place_name(_normalize_text(item.get("place_name") or item.get("title"))) or _normalize_text(
+            item.get("place_name") or item.get("title")
+        )
+        if name and name not in names:
+            names.append(name)
+    return names[:8]
+
+
+def _infer_polished_pace(route_names: list[str], agenda_count: int) -> str:
+    """中文注释：按节点数量和时段密度估算单日强度。"""
+    intensity = max(len(route_names), agenda_count)
+    if intensity <= 2:
+        return "轻松"
+    if intensity <= 4:
+        return "适中"
+    return "偏满"
+
+
+def _prefer_railway_travel(state: TripAgentState | None) -> bool:
+    """中文注释：从用户原始问题中识别是否明确偏好高铁或铁路。"""
+    if not state:
+        return False
+    message = _normalize_text(state.get("user_message"))
+    return any(token in message for token in ["高铁", "火车", "铁路", "12306"])
+
+
+def _build_polished_food_plan(current: dict, route_names: list[str], day_number: int) -> dict:
+    """中文注释：当模型只给出粗略餐饮字段时，用路线锚点补成更可执行的版本。"""
+    next_food = {
+        "breakfast": _normalize_text(current.get("breakfast"))[:160],
+        "lunch": _normalize_text(current.get("lunch"))[:160],
+        "dinner": _normalize_text(current.get("dinner"))[:160],
+        "snacks": _merge_unique_texts(list(current.get("snacks") or []), limit=4),
+        "recommendations": _merge_unique_texts(list(current.get("recommendations") or []), limit=6),
+    }
+    lunch_anchor = route_names[min(1, len(route_names) - 1)] if route_names else ""
+    dinner_anchor = route_names[-1] if route_names else lunch_anchor
+
+    if not next_food["breakfast"] and day_number == 1:
+        next_food["breakfast"] = "早餐以车站或酒店周边简餐为主，避免空腹赶路后再进主线。"
+    if not next_food["lunch"] or _is_generic_food_sentence(next_food["lunch"]):
+        next_food["lunch"] = (
+            f"午餐放在{lunch_anchor}附近解决，优先选择排队可控、翻台快的本地馆子。"
+            if lunch_anchor
+            else "午餐尽量落在中段节点附近，减少正午跨区折返。"
+        )
+    if not next_food["dinner"] or _is_generic_food_sentence(next_food["dinner"]):
+        next_food["dinner"] = (
+            f"晚餐尽量收在{dinner_anchor}附近，方便夜景或返住时顺路结束当天行程。"
+            if dinner_anchor
+            else "晚餐建议和夜间路线收在同一片区，避免最后一段再次跨城移动。"
+        )
+
+    recommendation_candidates = [
+        f"{lunch_anchor}适合安排一顿招牌正餐。" if lunch_anchor else "",
+        f"{dinner_anchor}附近可以留一顿夜间加餐或小吃。" if dinner_anchor else "",
+        "热门餐馆尽量错开 12 点和 18 点整的排队高峰。",
+    ]
+    next_food["recommendations"] = _merge_unique_texts(
+        [*next_food["recommendations"], *recommendation_candidates],
+        limit=6,
+    )
+    if dinner_anchor:
+        next_food["snacks"] = _merge_unique_texts([*next_food["snacks"], f"{dinner_anchor}周边留一档轻量小吃"], limit=4)
+    return next_food
+
+
+def _build_polished_transport_plan(
+    current: dict,
+    route_names: list[str],
+    day_number: int,
+    state: TripAgentState | None,
+) -> dict:
+    """中文注释：把交通描述补成真正可执行的顺路动线。"""
+    next_transport = {
+        "arrival": _normalize_text(current.get("arrival"))[:160],
+        "city_transport": _normalize_text(current.get("city_transport"))[:200],
+        "segments": list(current.get("segments") or []),
+    }
+    slots = (state or {}).get("slots") or {}
+    origin = _normalize_text(slots.get("origin"))
+    destination = _normalize_text(slots.get("destination"))
+    rail_preferred = _prefer_railway_travel(state)
+
+    if day_number == 1 and not next_transport["arrival"]:
+        if origin and destination:
+            travel_mode = "高铁" if rail_preferred else "城际交通"
+            next_transport["arrival"] = f"建议从{origin}先到{destination}，抵达后先寄存行李，再用{travel_mode}衔接后的整段白天主线。"
+        elif destination:
+            next_transport["arrival"] = f"先在{destination}核心区落脚，再展开当天第一段顺路动线。"
+
+    if not next_transport["city_transport"] or _is_generic_transport_sentence(next_transport["city_transport"]):
+        if len(route_names) >= 3:
+            next_transport["city_transport"] = (
+                f"白天按 {route_names[0]} -> {route_names[1]} -> {route_names[-1]} 顺路串联，优先地铁加步行，跨区再短打车收口。"
+            )
+        elif len(route_names) == 2:
+            next_transport["city_transport"] = f"{route_names[0]} 和 {route_names[1]} 建议放在同一天串联，主打地铁或步行，避免无效折返。"
+        elif len(route_names) == 1:
+            next_transport["city_transport"] = f"{route_names[0]} 作为当天核心片区，围绕同一街区或商圈展开最稳妥。"
+
+    if not next_transport["segments"] and len(route_names) >= 2:
+        next_transport["segments"] = [
+            {
+                "origin": origin_name[:80],
+                "destination": destination_name[:80],
+                "mode": "地铁/步行/短途打车",
+                "hint": "优先按顺路动线串联，实时通勤以地图工作台结果为准。",
+            }
+            for origin_name, destination_name in zip(route_names, route_names[1:])
+        ][:10]
+    return next_transport
+
+
+def _build_polished_budget_plan(
+    current: dict,
+    route_names: list[str],
+    day_number: int,
+    total_days: int,
+    state: TripAgentState | None,
+) -> dict:
+    """中文注释：把预算从抽象提示变成按天可读的消费分配建议。"""
+    current_summary = _normalize_text(current.get("summary"))[:200]
+    current_items = list(current.get("items") or [])
+    slots = (state or {}).get("slots") or {}
+    total_budget = _parse_budget_value(slots.get("budget"))
+    anchors = "、".join(route_names[:2]) or "主线片区"
+
+    summary = current_summary
+    if not summary or "待" in summary or "继续" in summary or len(_normalize_compact(summary)) < 14:
+        if total_budget:
+            if total_days == 1:
+                day_budget = total_budget
+            elif total_days == 2:
+                day_budget = round(total_budget * (0.56 if day_number == 1 else 0.44))
+            else:
+                day_budget = round(total_budget / max(total_days, 1))
+            summary = f"当天按约 {day_budget} 元控制，主要花在{anchors}一线的交通、餐饮和必要门票，避免临时跨区抬高成本。"
+        else:
+            summary = f"当天支出以{anchors}沿线交通、餐饮和必要门票为主，住宿与大额项目尽量提前锁定。"
+
+    items = current_items[:]
+    if not items:
+        if total_budget:
+            if total_days == 1:
+                day_budget = total_budget
+            elif total_days == 2:
+                day_budget = round(total_budget * (0.56 if day_number == 1 else 0.44))
+            else:
+                day_budget = round(total_budget / max(total_days, 1))
+            ratios = [("交通", 0.2, "高铁、地铁与必要短打车"), ("餐饮", 0.24, "午晚餐和夜间加餐预留")]
+            if day_number < total_days:
+                ratios.append(("住宿", 0.34, "按舒适型标准预留当晚房费"))
+            ratios.append(("机动", max(0.1, 1 - sum(item[1] for item in ratios)), "给门票、排队和临时调整留余量"))
+            items = [
+                {
+                    "name": name,
+                    "amount": f"{round(day_budget * ratio)} 元",
+                    "note": note,
+                    "ratio": ratio,
+                }
+                for name, ratio, note in ratios
+            ]
+        else:
+            items = [
+                {"name": "交通", "amount": "", "note": "优先保证主通勤和最后一段返程", "ratio": None},
+                {"name": "餐饮", "amount": "", "note": "围绕当天主线景点和夜间片区安排", "ratio": None},
+                {"name": "机动", "amount": "", "note": "给门票、排队和天气变化留余量", "ratio": None},
+            ]
+    return {"summary": summary[:200], "items": items[:6]}
+
+
+def _build_polished_weather_backup(current: list[str], route_names: list[str]) -> list[str]:
+    """中文注释：雨天备选至少给出可执行切换方式，而不是只留抽象兜底句。"""
+    candidates = _normalize_text_list(current, 4, 160)
+    if route_names:
+        candidates.extend(
+            [
+                f"如果下雨，先压缩 {route_names[0]} 的室外停留，把主要体验切到周边室内馆、商场或茶馆。",
+                f"{route_names[-1]} 可以保留做傍晚收尾，白天景点按天气灵活前后对调。",
+            ]
+        )
+    else:
+        candidates.append("遇到降雨时优先把室外景点压缩到拍照和打卡，把长停留转移到室内场景。")
+    return _merge_unique_texts(candidates, limit=4)
+
+
+def _build_polished_risk_notes(current: list[str], route_names: list[str], day_number: int, total_days: int) -> list[str]:
+    """中文注释：风险提醒补上错峰、预约和返程机动时间。"""
+    candidates = _normalize_text_list(current, 4, 160)
+    if route_names:
+        candidates.append(f"{route_names[0]} 到 {route_names[-1]} 这条线尽量错峰出发，热门点位提前预约或先取号。")
+    if day_number >= total_days:
+        candidates.append("返程前至少预留 30 到 40 分钟机动时间，避免最后一段因为排队或堵车压缩离站时间。")
+    else:
+        candidates.append("夜间收尾尽量靠近住宿区或主地铁线，避免深夜再做长距离折返。")
+    return _merge_unique_texts(candidates, limit=4)
+
+
+def _build_polished_day_summary(current_summary: str, route_names: list[str], pace_level: str, transport_plan: dict) -> str:
+    """中文注释：让单日摘要既说明路线，也解释节奏和动线逻辑。"""
+    summary = _normalize_text(current_summary)
+    if summary and len(_normalize_compact(summary)) >= 18 and "继续细化" not in summary:
+        return summary[:240]
+    if not route_names:
+        return f"这一天建议以{pace_level or '适中'}节奏展开，优先把主体验集中在一个片区内完成。"
+    core_route = " -> ".join(route_names[:3])
+    transport_brief = _normalize_text(transport_plan.get("city_transport"))
+    if transport_brief:
+        return f"这一天围绕 {core_route} 展开，整体节奏{pace_level or '适中'}，动线以顺路串联为主，{transport_brief[:80]}。"
+    return f"这一天围绕 {core_route} 展开，整体节奏{pace_level or '适中'}，把主要时间留给核心片区而不是跨区折返。"
+
+
+def _polish_structured_plan(
+    plan: StructuredTravelPlan | None,
+    rich_answer: str | None,
+    state: TripAgentState | None = None,
+) -> StructuredTravelPlan | None:
     """中文注释：在最终落状态前统一地点命名，并补足美食/交通细节。"""
     if not plan or not plan.days:
         return plan
 
     day_lookup = _build_day_section_lookup(rich_answer)
     polished_days: list[dict] = []
+    total_days = max(1, len(plan.days))
 
     for day in plan.days:
         day_payload = day.model_dump()
@@ -3073,6 +3299,8 @@ def _polish_structured_plan(plan: StructuredTravelPlan | None, rich_answer: str 
             route_nodes = places[:]
         if not route_nodes and agenda:
             route_nodes = _normalize_place_collection(_derive_places_from_agenda(agenda))
+        if places and len(places) > len(route_nodes):
+            route_nodes = _merge_place_lists(route_nodes, places)[:12]
 
         food_lines = _extract_day_section_lines(
             section_lines,
@@ -3099,6 +3327,21 @@ def _polish_structured_plan(plan: StructuredTravelPlan | None, rich_answer: str 
                 ][:6]
             )
 
+        route_names = _collect_day_route_names(agenda, route_nodes, places)
+        pace_level = _normalize_text(day_payload.get("pace_level")) or _infer_polished_pace(route_names, len(agenda))
+        food_plan = _build_polished_food_plan(food_plan, route_names, day.day)
+        transport_plan = _build_polished_transport_plan(transport_plan, route_names, day.day, state)
+        budget_plan = _build_polished_budget_plan(
+            day_payload.get("budget_plan") or {},
+            route_names,
+            day.day,
+            total_days,
+            state,
+        )
+        weather_backup = _build_polished_weather_backup(day_payload.get("weather_backup") or [], route_names)
+        risk_notes = _build_polished_risk_notes(day_payload.get("risk_notes") or [], route_names, day.day, total_days)
+        summary = _build_polished_day_summary(day_payload.get("summary") or "", route_names, pace_level, transport_plan)
+
         day_payload.update(
             {
                 "agenda": agenda[:10],
@@ -3107,12 +3350,20 @@ def _polish_structured_plan(plan: StructuredTravelPlan | None, rich_answer: str 
                 "route_digest": route_digest[:240],
                 "food_plan": food_plan,
                 "transport_plan": transport_plan,
+                "budget_plan": budget_plan,
+                "pace_level": pace_level[:60],
+                "weather_backup": weather_backup[:4],
+                "risk_notes": risk_notes[:4],
+                "summary": summary[:240],
             }
         )
         polished_days.append(day_payload)
 
     payload = plan.model_dump()
     payload["days"] = polished_days
+    slots = (state or {}).get("slots") or {}
+    city = _normalize_text(payload.get("city") or slots.get("destination"))
+    budget_value = _parse_budget_value(slots.get("budget"))
     payload["transport_hint"] = (
         _normalize_text(payload.get("transport_hint"))
         or next(
@@ -3120,6 +3371,37 @@ def _polish_structured_plan(plan: StructuredTravelPlan | None, rich_answer: str 
             "",
         )
     )[:200]
+    payload["budget_hint"] = (
+        _normalize_text(payload.get("budget_hint"))
+        or (f"按总预算 {budget_value} 元估算，建议把钱花在主交通、住宿和真正想停留的核心体验上。" if budget_value else "")
+        or next(
+            (_normalize_text(day.get("budget_plan", {}).get("summary")) for day in polished_days if _normalize_text(day.get("budget_plan", {}).get("summary"))),
+            "",
+        )
+    )[:200]
+    payload["rainy_day_hint"] = (
+        _normalize_text(payload.get("rainy_day_hint"))
+        or next(
+            ("；".join(day.get("weather_backup", [])[:2]) for day in polished_days if day.get("weather_backup")),
+            "",
+        )
+    )[:200]
+    payload["risk_hint"] = (
+        _normalize_text(payload.get("risk_hint"))
+        or next(
+            ("；".join(day.get("risk_notes", [])[:2]) for day in polished_days if day.get("risk_notes")),
+            "",
+        )
+    )[:200]
+    payload["trip_summary"] = (
+        _normalize_text(payload.get("trip_summary"))
+        or (
+            f"这是一版围绕 {city} 展开的 {total_days} 日可执行方案，重点兼顾顺路动线、餐饮体验和临场机动空间。"
+            if city
+            else ""
+        )
+        or next((_normalize_text(day.get("summary")) for day in polished_days if _normalize_text(day.get("summary"))), "")
+    )[:240]
     try:
         return StructuredTravelPlan.model_validate(payload)
     except ValidationError:
@@ -3152,7 +3434,7 @@ async def planner_node(state: TripAgentState) -> TripAgentState:
 
     if not structured_plan:
         structured_plan = _build_structured_plan_fallback(state)
-    structured_plan = _polish_structured_plan(structured_plan, rich_answer)
+    structured_plan = _polish_structured_plan(structured_plan, rich_answer, state)
 
     state["structured_plan"] = structured_plan.model_dump() if structured_plan else None
     state["itinerary"] = _build_itinerary_from_structured_plan(structured_plan)

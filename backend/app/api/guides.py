@@ -76,6 +76,15 @@ def list_guide_import_records(
     return ok({"items": items, "total": total, "limit": limit, "offset": offset})
 
 
+@router.get("/guides/import-records/{record_id}")
+def get_guide_import_record(record_id: int, db: Session = Depends(get_db)):
+    """中文注释：返回单条导入记录的完整详情，避免前端只能依赖列表快照。"""
+    item = GuideLinkImportService(db).get_import_record(record_id)
+    if not item:
+        return fail(4040, "未找到对应的导入记录", {"record_id": record_id})
+    return ok(item)
+
+
 @router.delete("/guides/import-records/{record_id}")
 def delete_guide_import_record(record_id: int, db: Session = Depends(get_db)):
     """删除单条攻略导入记录；不删除已入库攻略，避免误伤知识库内容。"""

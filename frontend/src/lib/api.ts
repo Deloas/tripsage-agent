@@ -453,6 +453,10 @@ export async function fetchGuideImportRecords(): Promise<GuideImportRecordItem[]
   ).then((data) => data.items);
 }
 
+export async function fetchGuideImportRecord(recordId: number): Promise<GuideImportRecordItem> {
+  return unwrapRaw(api.get<ApiResponse<GuideImportRecordItem>>(`/guides/import-records/${recordId}`));
+}
+
 export async function deleteGuideImportRecord(recordId: number): Promise<GuideImportRecordItem & { deleted: boolean }> {
   return unwrapRaw(api.delete<ApiResponse<GuideImportRecordItem & { deleted: boolean }>>(`/guides/import-records/${recordId}`));
 }

@@ -240,6 +240,8 @@ class GuideLinkImportService:
             "title": (llm_hint.get("normalized_title") if llm_hint else None) or title,
             "source_type": source_type,
             "resolved_url": page.resolved_url,
+            "content": content,
+            "structured": self._build_structured_review_draft(title=title, content=content),
             "quality": quality,
             "diagnostics": diagnostics,
             "llm_enhanced": bool(llm_hint),
@@ -358,6 +360,8 @@ class GuideLinkImportService:
             "title": (llm_hint.get("normalized_title") if llm_hint else None) or title,
             "source_type": source_type,
             "resolved_url": resolved_url,
+            "content": content,
+            "structured": self._normalize_structured_override(override),
             "quality": quality,
             "diagnostics": {"fetch_method": "editable_confirm", "quality_grade": quality["grade"]},
             "llm_enhanced": bool(llm_hint),
@@ -380,6 +384,13 @@ class GuideLinkImportService:
             .all()
         )
         return [self._record_to_dict(record) for record in records], int(total or 0)
+
+    def get_import_record(self, record_id: int) -> dict[str, Any] | None:
+        """中文注释：按记录 ID 拉取完整导入详情，供前端稳定重开历史记录。"""
+        record = self.db.get(GuideImportRecord, record_id)
+        if not record:
+            return None
+        return self._record_to_dict(record)
 
     def delete_import_record(self, record_id: int) -> dict[str, Any] | None:
         """删除单条导入记录；只清理导入历史，不删除已入库攻略正文。"""

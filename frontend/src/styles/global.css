@@ -13064,7 +13064,7 @@ button:disabled {
 .knowledge-image-lightbox {
   position: fixed;
   inset: 0;
-  z-index: 70;
+  z-index: 5010;
   display: grid;
   place-items: center;
   padding: 24px;
@@ -13114,6 +13114,78 @@ button:disabled {
   object-fit: contain;
   border-radius: 18px;
   background: oklch(96% 0.008 90);
+}
+
+.guide-import-confirm-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 5020;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.guide-import-confirm-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: oklch(12% 0.02 240 / 0.54);
+}
+
+.guide-import-confirm-dialog-panel {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 14px;
+  width: min(520px, calc(100vw - 36px));
+  padding: 18px;
+  border: 1px solid oklch(100% 0 0 / 0.14);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, oklch(99% 0.012 82 / 0.96), oklch(98% 0.014 248 / 0.92)),
+    oklch(100% 0 0 / 0.96);
+  box-shadow: 0 30px 72px oklch(12% 0.02 240 / 0.26);
+}
+
+.guide-import-confirm-dialog-head {
+  display: grid;
+  gap: 8px;
+}
+
+.guide-import-confirm-dialog-head strong {
+  color: var(--color-ink-deep);
+  font-size: 16px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.guide-import-confirm-dialog-body {
+  display: grid;
+  gap: 10px;
+}
+
+.guide-import-confirm-dialog-body p {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.guide-import-confirm-dialog-note {
+  padding: 10px 12px;
+  border: 1px solid oklch(39% 0.065 248 / 0.12);
+  border-radius: 14px;
+  background: oklch(100% 0 0 / 0.66);
+  color: var(--color-ink-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.guide-import-confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .history-status-pill {
@@ -13174,6 +13246,16 @@ button:disabled {
   .guide-modal-upgraded {
     width: 100%;
     border-radius: 18px;
+  }
+
+  .guide-import-confirm-dialog {
+    padding: 12px;
+  }
+
+  .guide-import-confirm-dialog-panel {
+    width: min(100%, calc(100vw - 24px));
+    padding: 16px;
+    border-radius: 20px;
   }
 
   .guide-modal-header {

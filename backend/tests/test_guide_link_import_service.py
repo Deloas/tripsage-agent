@@ -99,6 +99,45 @@ def test_import_link_indexes_valid_page(db_session, monkeypatch) -> None:
     assert "拙政园" in result["guide"]["content"]
 
 
+def test_import_record_detail_endpoint_returns_full_payload(db_session, monkeypatch) -> None:
+    """中文注释：导入记录详情应能脱离列表快照独立读取完整正文。"""
+    monkeypatch.setattr(VectorStoreService, "index_chunks", lambda self, chunks: True)
+
+    async def fake_fetch(self, url: str, source_type: str) -> FetchedGuidePage:
+        return FetchedGuidePage(
+            requested_url=url,
+            resolved_url="https://example.com/foshan-guide",
+            html_text=SAMPLE_HTML,
+            status_code=200,
+            content_type="text/html",
+            fetch_method="httpx",
+        )
+
+    async def fake_llm_hint(self, **kwargs):
+        return {
+            "normalized_title": "佛山两天一夜轻松攻略",
+            "city": "佛山",
+            "days": 2,
+            "category": "佛山",
+            "author": "导入记录测试",
+            "summary": "用于验证导入记录详情页重新打开时仍能拿到完整正文。",
+        }
+
+    monkeypatch.setattr(GuideLinkImportService, "_fetch_public_page", fake_fetch)
+    monkeypatch.setattr(GuideLinkImportService, "_build_llm_structured_hint", fake_llm_hint)
+
+    service = GuideLinkImportService(db_session)
+    result = asyncio.run(service.import_link(GuideLinkImportRequest(url="https://example.com/foshan-guide")))
+    record_id = result["record"]["id"]
+
+    detail = service.get_import_record(record_id)
+
+    assert detail is not None
+    assert detail["id"] == record_id
+    assert detail["content"]
+    assert detail["structured"]
+
+
 def test_import_link_detects_duplicate_url(db_session, monkeypatch) -> None:
     """同一链接重复导入时应直接命中已有攻略，不再重复入库。"""
     monkeypatch.setattr(VectorStoreService, "index_chunks", lambda self, chunks: True)

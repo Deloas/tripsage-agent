@@ -33,6 +33,7 @@ import {
   fetchAuthSessions,
   fetchConversationDetail,
   fetchConversations,
+  fetchGuideImportRecord,
   fetchCurrentUser,
   fetchGuideImportRecords,
   fetchGuideImportTask,
@@ -451,6 +452,16 @@ export default function App() {
     }
   }
 
+  const handleFetchGuideImportRecord = useCallback(async (recordId: number): Promise<GuideImportRecordItem | null> => {
+    try {
+      const record = await fetchGuideImportRecord(recordId);
+      setGuideImportRecords((current) => upsertGuideImportRecord(current, record));
+      return record;
+    } catch {
+      return null;
+    }
+  }, []);
+
   async function refreshGuideImportTasks() {
     try {
       const tasks = await fetchGuideImportTasks();
@@ -521,14 +532,18 @@ export default function App() {
   }
 
   function openAddGuideModal(recordId?: number) {
+    const normalizedRecordId = typeof recordId === "number" && Number.isFinite(recordId) ? recordId : undefined;
     setGuideResult(null);
     setLastGuideImport(null);
     setLastImportedGuide(null);
     setGuidePreview(null);
     setActiveGuideImportTask(null);
-    setGuideImportRecordSelection(recordId ?? null);
+    setGuideImportRecordSelection(normalizedRecordId ?? null);
     setGuidePreview(null);
     void Promise.allSettled([refreshGuideImportRecords(), refreshGuideImportTasks()]);
+    if (typeof normalizedRecordId === "number") {
+      void handleFetchGuideImportRecord(normalizedRecordId);
+    }
     setModalOpen(true);
   }
 
@@ -1641,6 +1656,7 @@ export default function App() {
         importRecords={guideImportRecords}
         importTasks={guideImportTasks}
         activeImportTask={activeGuideImportTask}
+        onFetchImportRecord={handleFetchGuideImportRecord}
         onDeleteImportRecord={handleDeleteGuideImportRecord}
         onUseImportedGuide={handleUseGuideInPlanning}
         onOptimizeImportedGuide={handleOptimizeImportedGuide}
@@ -3813,6 +3829,14 @@ function upsertGuideImportTask(tasks: GuideImportTaskItem[], task: GuideImportTa
     return [task, ...tasks].slice(0, 30);
   }
   return tasks.map((item) => (item.id === task.id ? task : item));
+}
+
+function upsertGuideImportRecord(records: GuideImportRecordItem[], record: GuideImportRecordItem) {
+  const exists = records.some((item) => item.id === record.id);
+  if (!exists) {
+    return [record, ...records].slice(0, 50);
+  }
+  return records.map((item) => (item.id === record.id ? { ...item, ...record } : item));
 }
 
 function buildLocalCompare(base: PlanVersion, target: PlanVersion): PlanVersionCompare {
