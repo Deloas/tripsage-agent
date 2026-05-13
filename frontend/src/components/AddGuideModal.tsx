@@ -75,6 +75,24 @@ type HistoryView = "list" | "detail";
 type ImagePreviewState = { url: string; label: string } | null;
 type DeleteDialogState = GuideImportRecordItem | null;
 
+interface PendingDeleteAction {
+  record: GuideImportRecordItem;
+  expireAt: number;
+  restoreView: HistoryView;
+  previousSelectedRecordId: number | null;
+  previousSnapshot: GuideImportRecordItem | null;
+}
+
+interface RecentActionNotice {
+  tone: "info" | "success" | "danger";
+  title: string;
+  detail: string;
+  expiresAt?: number;
+}
+
+const DELETE_UNDO_WINDOW_MS = 6000;
+const RECENT_ACTION_HIDE_MS = 3200;
+
 interface PreviewDraft {
   title: string;
   content: string;
@@ -138,8 +156,11 @@ export function AddGuideModal({
   const [selectedRecordLoading, setSelectedRecordLoading] = useState(false);
   const [selectedRecordError, setSelectedRecordError] = useState<string | null>(null);
   const [pendingDeleteRecord, setPendingDeleteRecord] = useState<DeleteDialogState>(null);
+  const [pendingDeleteAction, setPendingDeleteAction] = useState<PendingDeleteAction | null>(null);
+  const [recentAction, setRecentAction] = useState<RecentActionNotice | null>(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [countdownNow, setCountdownNow] = useState(() => Date.now());
   const [routePreview, setRoutePreview] = useState<GuideRoutePreviewResult | null>(null);
   const [routePreviewLoading, setRoutePreviewLoading] = useState(false);
   const [railwayOrigin, setRailwayOrigin] = useState("");
@@ -147,16 +168,28 @@ export function AddGuideModal({
   const [railwayLoading, setRailwayLoading] = useState(false);
   const [mobilityError, setMobilityError] = useState<string | null>(null);
 
+  const visibleImportRecords = useMemo(
+    () => {
+      if (!pendingDeleteAction) return importRecords;
+      return importRecords.filter((item) => item.id !== pendingDeleteAction.record.id);
+    },
+    [importRecords, pendingDeleteAction],
+  );
+
   const selectedRecord = useMemo(
     () => {
-      const current = importRecords.find((item) => String(item.id) === String(selectedRecordId)) || null;
+      const current = visibleImportRecords.find((item) => String(item.id) === String(selectedRecordId)) || null;
       const snapshot = selectedRecordSnapshot && String(selectedRecordSnapshot.id) === String(selectedRecordId)
         ? selectedRecordSnapshot
         : null;
       return mergeGuideImportRecord(current, snapshot);
     },
-    [importRecords, selectedRecordId, selectedRecordSnapshot],
+    [selectedRecordId, selectedRecordSnapshot, visibleImportRecords],
   );
+
+  const pendingDeleteSeconds = pendingDeleteAction
+    ? Math.max(0, Math.ceil((pendingDeleteAction.expireAt - countdownNow) / 1000))
+    : 0;
 
   const currentQuality =
     importResult?.quality
@@ -206,14 +239,6 @@ export function AddGuideModal({
   }, [onClose, open, pendingDeleteRecord, previewImage]);
 
   useEffect(() => {
-    if (!open) {
-      setPendingDeleteRecord(null);
-      setDeleteSubmitting(false);
-      setDeleteError(null);
-    }
-  }, [open]);
-
-  useEffect(() => {
     if (!open) return;
     if (preselectedRecordId || importResult?.record?.id || previewResult?.record?.id) return;
     // 中文注释：普通打开时回到记录列表，避免沿用上一次关闭前停留的详情态。
@@ -240,16 +265,16 @@ export function AddGuideModal({
       setHistoryView("detail");
       return;
     }
-    if (!selectedRecordId && importRecords.length) {
-      setSelectedRecordId(importRecords[0].id);
-      setSelectedRecordSnapshot(importRecords[0]);
+    if (!selectedRecordId && visibleImportRecords.length) {
+      setSelectedRecordId(visibleImportRecords[0].id);
+      setSelectedRecordSnapshot(visibleImportRecords[0]);
       return;
     }
-    if (!importRecords.length) {
+    if (!visibleImportRecords.length) {
       setSelectedRecordId(null);
       setSelectedRecordSnapshot(null);
     }
-  }, [importRecords, importResult?.record?.id, open, preselectedRecordId, previewResult?.record?.id, selectedRecordId]);
+  }, [importResult?.record?.id, open, preselectedRecordId, previewResult?.record?.id, selectedRecordId, visibleImportRecords]);
 
   useEffect(() => {
     if (!open || !selectedRecordId) return undefined;
@@ -345,6 +370,46 @@ export function AddGuideModal({
     };
   }, [importedGuide, selectedRecord?.guide_id]);
 
+  useEffect(() => {
+    if (!pendingDeleteAction) return undefined;
+
+    // 中文注释：删除倒计时期间持续刷新提示条秒数，避免用户看到静止的过期数字。
+    setCountdownNow(Date.now());
+    const timer = window.setInterval(() => {
+      setCountdownNow(Date.now());
+    }, 250);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [pendingDeleteAction]);
+
+  useEffect(() => {
+    if (!pendingDeleteAction) return undefined;
+
+    const delay = Math.max(0, pendingDeleteAction.expireAt - Date.now());
+    const timeout = window.setTimeout(() => {
+      void commitPendingDelete(pendingDeleteAction);
+    }, delay);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [pendingDeleteAction]);
+
+  useEffect(() => {
+    if (!recentAction?.expiresAt) return undefined;
+
+    const delay = Math.max(0, recentAction.expiresAt - Date.now());
+    const timeout = window.setTimeout(() => {
+      setRecentAction((current) => (current?.expiresAt === recentAction.expiresAt ? null : current));
+    }, delay);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [recentAction]);
+
   if (!open) return null;
 
   const canSubmitManual = manualTitle.trim().length > 0 && manualContent.trim().length > 0;
@@ -433,6 +498,15 @@ export function AddGuideModal({
   }
 
   function requestDeleteRecord(record: GuideImportRecordItem) {
+    if (pendingDeleteAction) {
+      setRecentAction({
+        tone: "info",
+        title: "已有待删除记录",
+        detail: "请先撤销当前删除，或等待倒计时结束后再继续处理。",
+        expiresAt: Date.now() + RECENT_ACTION_HIDE_MS,
+      });
+      return;
+    }
     setPendingDeleteRecord(record);
     setDeleteError(null);
   }
@@ -440,7 +514,47 @@ export function AddGuideModal({
   async function handleConfirmDeleteRecord() {
     if (!pendingDeleteRecord || deleteSubmitting) return;
 
-    const recordId = pendingDeleteRecord.id;
+    const deletingRecord = pendingDeleteRecord;
+    const deletingRecordId = deletingRecord.id;
+    // 中文注释：先算出删除后的承接记录，确认后立即切换，避免详情页瞬间掉回空白。
+    const nextVisibleRecord = resolveNextGuideImportRecord(importRecords, deletingRecordId);
+    const deletingCurrentRecordNow = selectedRecordId === deletingRecordId;
+    const restoreView = historyView === "detail" ? "detail" : "list";
+
+    setDeleteSubmitting(false);
+    setDeleteError(null);
+    setPendingDeleteAction({
+      record: deletingRecord,
+      expireAt: Date.now() + DELETE_UNDO_WINDOW_MS,
+      restoreView,
+      previousSelectedRecordId: selectedRecordId,
+      previousSnapshot: selectedRecordSnapshot,
+    });
+    setPendingDeleteRecord(null);
+    setCountdownNow(Date.now());
+    setRecentAction(null);
+
+    if (!deletingCurrentRecordNow) {
+      return;
+    }
+
+    if (nextVisibleRecord) {
+      setSelectedRecordId(nextVisibleRecord.id);
+      setSelectedRecordSnapshot(nextVisibleRecord);
+      setSelectedRecordError(null);
+      setSelectedRecordLoading(restoreView === "detail");
+      setHistoryView(restoreView);
+      return;
+    }
+
+    setSelectedRecordId(null);
+    setSelectedRecordSnapshot(null);
+    setSelectedRecordLoading(false);
+    setSelectedRecordError(null);
+    setHistoryView("list");
+    return;
+
+    const recordId = pendingDeleteRecord!.id;
     // 中文注释：先算出删除后的承接记录，成功后就能无缝切到下一条，而不是把用户甩回空白态。
     const nextRecord = resolveNextGuideImportRecord(importRecords, recordId);
     const deletingCurrentRecord = selectedRecordId === recordId;
@@ -455,8 +569,8 @@ export function AddGuideModal({
       if (!deletingCurrentRecord) return;
 
       if (nextRecord) {
-        setSelectedRecordId(nextRecord.id);
-        setSelectedRecordSnapshot(nextRecord);
+        setSelectedRecordId(nextRecord!.id);
+        setSelectedRecordSnapshot(nextRecord!);
         setSelectedRecordError(null);
         setSelectedRecordLoading(wasDetailView);
         setHistoryView(wasDetailView ? "detail" : "list");
@@ -473,6 +587,66 @@ export function AddGuideModal({
     } finally {
       setDeleteSubmitting(false);
     }
+  }
+
+  async function commitPendingDelete(action: PendingDeleteAction) {
+    setDeleteSubmitting(true);
+    setDeleteError(null);
+    try {
+      await onDeleteImportRecord(action.record.id);
+      setPendingDeleteAction((current) => (current?.record.id === action.record.id ? null : current));
+      setRecentAction({
+        tone: "success",
+        title: "记录已删除",
+        detail: action.record.title || action.record.url,
+        expiresAt: Date.now() + RECENT_ACTION_HIDE_MS,
+      });
+    } catch {
+      setPendingDeleteAction((current) => (current?.record.id === action.record.id ? null : current));
+      if (action.restoreView === "detail" || action.previousSelectedRecordId === action.record.id) {
+        setSelectedRecordId(action.record.id);
+        setSelectedRecordSnapshot(mergeGuideImportRecord(action.previousSnapshot, action.record));
+        setSelectedRecordLoading(false);
+        setSelectedRecordError(null);
+        setHistoryView(action.restoreView);
+      }
+      setDeleteError("删除失败，请检查后端服务状态后重试。");
+      setRecentAction({
+        tone: "danger",
+        title: "删除失败，记录已恢复",
+        detail: "后端未完成删除，本条导入记录已自动恢复。",
+        expiresAt: Date.now() + RECENT_ACTION_HIDE_MS,
+      });
+    } finally {
+      setDeleteSubmitting(false);
+    }
+  }
+
+  function handleUndoPendingDelete() {
+    if (!pendingDeleteAction || deleteSubmitting) return;
+
+    const action = pendingDeleteAction;
+    setPendingDeleteAction(null);
+    setDeleteError(null);
+    setCountdownNow(Date.now());
+
+    if (action.restoreView === "detail" || action.previousSelectedRecordId === action.record.id) {
+      setSelectedRecordId(action.record.id);
+      setSelectedRecordSnapshot(mergeGuideImportRecord(action.previousSnapshot, action.record));
+      setSelectedRecordLoading(false);
+      setSelectedRecordError(null);
+      setHistoryView(action.restoreView);
+    } else if (!selectedRecordId) {
+      setSelectedRecordId(action.record.id);
+      setSelectedRecordSnapshot(action.record);
+    }
+
+    setRecentAction({
+      tone: "success",
+      title: "已撤销删除",
+      detail: action.record.title || action.record.url,
+      expiresAt: Date.now() + RECENT_ACTION_HIDE_MS,
+    });
   }
 
   async function handleBuildMobilityPreview(guide: GuideDetail) {
@@ -903,12 +1077,12 @@ export function AddGuideModal({
                     </span>
                     <strong>最近导入与抓取结果</strong>
                   </div>
-                  <span className="history-status-pill">{String(importRecords.length)} 条</span>
+                  <span className="history-status-pill">{String(visibleImportRecords.length)} 条</span>
                 </div>
 
-                {importRecords.length ? (
+                {visibleImportRecords.length ? (
                   <div className="guide-import-history-list" data-testid="guide-import-history-list">
-                    {importRecords.map((record) => (
+                    {visibleImportRecords.map((record) => (
                       <article
                         key={record.id}
                         className={`guide-import-history-item ${record.id === selectedRecordId ? "active" : ""}`}
@@ -937,6 +1111,7 @@ export function AddGuideModal({
                             className="danger"
                             data-testid={`guide-import-record-delete-${record.id}`}
                             onClick={() => requestDeleteRecord(record)}
+                            disabled={Boolean(pendingDeleteAction)}
                           >
                             <Trash2 size={12} />
                             删除
@@ -967,6 +1142,7 @@ export function AddGuideModal({
                         className="secondary-action compact danger"
                         data-testid="guide-import-detail-delete-trigger"
                         onClick={() => requestDeleteRecord(selectedRecord)}
+                        disabled={Boolean(pendingDeleteAction)}
                       >
                         <Trash2 size={14} />
                         删除记录
@@ -1205,6 +1381,54 @@ export function AddGuideModal({
               </button>
             </div>
           </section>
+        </div>
+      ) : null}
+
+      {pendingDeleteAction ? (
+        <div
+          className={`guide-import-recent-action tone-danger ${deleteSubmitting ? "submitting" : ""}`}
+          data-testid="guide-import-recent-action"
+        >
+          <div className="guide-import-recent-action-panel">
+            <div className="guide-import-recent-action-copy">
+              <span className="section-kicker">
+                <Trash2 size={13} />
+                最近操作
+              </span>
+              <strong>记录将在 {pendingDeleteSeconds} 秒后删除</strong>
+              <p>{pendingDeleteAction.record.title || pendingDeleteAction.record.url}</p>
+            </div>
+            <div className="guide-import-recent-action-actions">
+              <span className="guide-import-recent-action-chip">
+                {deleteSubmitting ? "正在删除..." : `${pendingDeleteSeconds}s`}
+              </span>
+              <button
+                type="button"
+                className="secondary-action compact"
+                data-testid="guide-import-undo-delete"
+                onClick={handleUndoPendingDelete}
+                disabled={deleteSubmitting}
+              >
+                撤销删除
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : recentAction ? (
+        <div
+          className={`guide-import-recent-action tone-${recentAction.tone}`}
+          data-testid="guide-import-recent-action"
+        >
+          <div className="guide-import-recent-action-panel">
+            <div className="guide-import-recent-action-copy">
+              <span className="section-kicker">
+                <CheckCircle2 size={13} />
+                最近操作
+              </span>
+              <strong>{recentAction.title}</strong>
+              <p>{recentAction.detail}</p>
+            </div>
+          </div>
         </div>
       ) : null}
     </>
